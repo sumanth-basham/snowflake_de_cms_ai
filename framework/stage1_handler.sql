@@ -304,12 +304,25 @@ BEGIN
             'ON_ERROR = CONTINUE\n' ||
             'PURGE = FALSE';
     ELSE
-        -- CSV / TXT: columns auto-mapped by position through named file format
+        -- CSV / TXT: build positional projection $1 AS <col1>, $2 AS <col2>, ...
+        LET csv_select VARCHAR := '';
+        v_i := 0;
+        v_col_count := ARRAY_SIZE(:v_discovered_cols);
+        WHILE :v_i < :v_col_count DO
+            v_col := :v_discovered_cols[v_i]::VARCHAR;
+            IF :v_i = 0 THEN
+                csv_select := '$' || (:v_i + 1) || ' AS ' || :v_col;
+            ELSE
+                csv_select := :csv_select || ',\n        $' || (:v_i + 1) || ' AS ' || :v_col;
+            END IF;
+            v_i := v_i + 1;
+        END WHILE;
+
         v_copy_sql :=
             'COPY INTO ' || :v_full_table_name || '\n' ||
             'FROM (\n' ||
             '    SELECT\n' ||
-            '        $1,\n' ||  -- positional columns mapped by COPY INTO
+            '        ' || :csv_select || ',\n' ||
             '        ''' || :p_run_id          || '''         AS run_id,\n' ||
             '        ''' || :v_batch_id        || '''         AS batch_id,\n' ||
             '        NULL                                     AS chunk_id,\n' ||
