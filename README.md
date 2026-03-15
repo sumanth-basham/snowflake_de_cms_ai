@@ -1,17 +1,35 @@
 # Snowflake Metadata-Driven File Ingestion Framework — GCP Platform
 
-A production-grade, metadata-driven file ingestion and transformation framework built natively for **GCP + Snowflake**. A single YAML configuration per dataset drives all three pipeline stages: raw landing (Stage 1), standardisation & validation (Stage 2), and curated outputs (Stage 3).
+A production-grade, metadata-driven file ingestion and transformation framework built natively for **GCP + Snowflake**.
 
----
+## Overview
 
-## Prerequisites
+This framework provides a reusable, parameter-driven pipeline for ingesting files from cloud storage into Snowflake through three ordered stages: raw landing (Stage1), standardisation and validation (Stage2), and curated outputs (Stage3).
 
-| Requirement | Details |
+A single master entry point handles any dataset by accepting three runtime parameters:
+
+| Parameter | Description |
 |---|---|
-| **Snowflake account** | ACCOUNTADMIN or SYSADMIN role for initial setup |
-| **GCP project** | A GCS bucket for source files and a Snowflake storage integration |
-| **Python 3.8+** | Required only for local YAML validation tests |
-| **Python packages** | `pyyaml`, `jsonschema`, `pytest` (for tests) |
+| `yaml_name` | Dataset YAML filename (e.g. `claims_txt.yaml`) |
+| `yaml_file_path` | Path within the config stage (e.g. `datasets/claims_txt.yaml`) |
+| `process_type` | Process type — currently `file_ingestion` |
+
+```sql
+-- Run any dataset with one call (Snowpark Python SP — GCP platform)
+CALL UTIL.MASTER_RUNNER_SP(
+    'claims_txt.yaml',
+    'datasets/claims_txt.yaml',
+    'file_ingestion',
+    FALSE   -- FALSE = full pipeline; TRUE = post-Snowpipe (Stage2+Stage3 only)
+);
+
+-- Original SQL SP (still available as fallback)
+CALL UTIL.MASTER_RUNNER(
+    'claims_txt.yaml',
+    'datasets/claims_txt.yaml',
+    'file_ingestion'
+);
+```
 
 ---
 
@@ -19,7 +37,6 @@ A production-grade, metadata-driven file ingestion and transformation framework 
 
 ```
 snowflake_de_cms_ai/
-├── one_shot_setup.sql                 # Single-file deployment (all 16 steps)
 ├── configs/
 │   ├── schema.yaml                    # YAML structure validation contract
 │   └── datasets/
@@ -30,25 +47,21 @@ snowflake_de_cms_ai/
 ├── ddl/
 │   ├── 00_database_and_schemas.sql    # Database, warehouse, schema creation
 │   ├── 01_file_formats.sql            # Named file formats (CSV, TXT, Parquet)
-│   ├── 02_external_stages.sql         # External stage templates (update GCS URLs)
+│   ├── 02_external_stages.sql         # External stage templates
 │   ├── 03_control_tables.sql          # Control and metadata tables
 │   ├── 04_audit_tables.sql            # Audit tables
-│   ├── 05_reject_tables.sql          # Reject / quarantine tables
-│   ├── 06_rbac.sql                    # RBAC roles and grants
-│   └── 07_snowpipe_gcs_pubsub.sql     # Snowpipe auto-ingestion via GCS Pub/Sub
+│   ├── 05_reject_tables.sql           # Reject / quarantine tables
+│   └── 06_rbac.sql                    # RBAC roles and grants
 │
 ├── framework/
-│   ├── master_runner.sql              # Master entry point stored procedure (SQL)
+│   ├── master_runner.sql              # Master entry point stored procedure
 │   ├── config_loader.sql              # YAML loading and validation utilities
-│   ├── stage1_handler.sql             # Stage 1 raw ingestion handler
-│   ├── stage2_handler.sql             # Stage 2 standardisation handler
-│   ├── stage3_handler.sql             # Stage 3 post-processing handler
+│   ├── stage1_handler.sql             # Stage1 raw ingestion handler
+│   ├── stage2_handler.sql             # Stage2 standardisation handler
+│   ├── stage3_handler.sql             # Stage3 post-processing handler
 │   ├── python_udfs/
-│   │   ├── yaml_parser.sql            # Python UDF: YAML text → VARIANT
+│   │   ├── yaml_parser.sql            # Python UDF: YAML → VARIANT
 │   │   └── schema_validator.sql       # Python UDF: jsonschema validation
-│   ├── snowpark/
-│   │   ├── master_runner_sp.py        # Snowpark Python stored procedure (main entry point)
-│   │   └── yaml_loader_sp.py          # Snowpark YAML loader
 │   └── utils/
 │       ├── log_writer.sql             # Centralised logging utilities
 │       ├── field_validator.sql        # Runtime field-reference validation
@@ -62,280 +75,303 @@ snowflake_de_cms_ai/
 │       └── snowflake_ingestion_dag.py # Apache Airflow DAG option
 │
 └── tests/
-    └── validate_yaml.py               # YAML structure validation tests (48 tests)
+    └── validate_yaml.py               # YAML structure validation tests
 ```
 
 ---
 
-## Step-by-Step Setup and Run Instructions
+## Architecture
 
-Follow the steps below **in order**. Each step lists the exact file to run and any notes.
-
-### Step 1 — Create the Database, Warehouse, and Schemas (SQL)
-
-Run as `ACCOUNTADMIN` or `SYSADMIN` in a Snowflake worksheet.
+### Three-Stage Design
 
 ```
-File: ddl/00_database_and_schemas.sql
+Cloud Storage
+     │
+     ▼
+┌─────────────────────────────────────────────────────┐
+│ STAGE 1 – RAW                                        │
+│  • COPY INTO raw table                               │
+│  • ALL payload columns as VARCHAR                    │
+│  • Source schema discovery (INFER_SCHEMA)            │
+│  • batch_load_date as TIMESTAMP_NTZ                  │
+│  • File, batch, chunk tracking                       │
+│  Target schema: RAW                                  │
+└───────────────────────┬─────────────────────────────┘
+                        │ Discovered columns + batch context
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ STAGE 2 – STG                                        │
+│  • Runtime field-reference validation (fail-fast)    │
+│  • Schema drift detection and handling               │
+│  • Type conversions (LONG, INT, DECIMAL, DATE, etc.) │
+│  • Null checks and composite unique checks           │
+│  • Reject routing to REJECTS schema                  │
+│  • MERGE / APPEND / OVERWRITE to STG table           │
+│  Target schema: STG                                  │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ STAGE 3 – CURATED                                    │
+│  • Execute ordered sql_query actions from YAML       │
+│  • CREATE OR REPLACE VIEW / TABLE / etc.             │
+│  • Each action: name + type + value                  │
+│  Target schema: CURATED                              │
+└─────────────────────────────────────────────────────┘
 ```
 
-This creates the `CMS_AI_DB` database, the compute warehouse, and the seven schemas: `RAW`, `STG`, `CURATED`, `CONTROL`, `AUDIT`, `REJECTS`, `UTIL`.
+### Snowflake Schemas
+
+| Schema | Purpose |
+|---|---|
+| `RAW` | Stage1 raw landing tables — all payload columns as VARCHAR |
+| `STG` | Stage2 typed, validated, merged data |
+| `CURATED` | Stage3 views, aggregates, and published tables |
+| `CONTROL` | Pipeline run logs, batch logs, file logs, chunk logs, YAML execution logs |
+| `AUDIT` | Merge audit, schema drift log, Stage3 action log, validation log |
+| `REJECTS` | Quarantine tables for rows failing Stage2 validation |
+| `UTIL` | Framework stored procedures, Python UDFs, file formats, stages |
 
 ---
 
-### Step 2 — Create Named File Formats (SQL)
+## YAML Configuration
 
-```
-File: ddl/01_file_formats.sql
+Every dataset is configured through a single YAML file with three sections that map directly to the three execution stages.
+
+### Stage1 — Raw Ingestion
+
+```yaml
+stage1:
+  source_file_path: gcs://my-bucket/raw/claims/
+  source_arrival_file_path: gcs://my-bucket/raw/claims/arrival/
+  file_pattern: ".*\\.txt"
+  target_schema: RAW
+  target_table: CLAIMS_TXT_RAW
+  load_type: delta          # full | delta | adhoc
+  file_type: txt            # csv | txt | parquet
+  archive_files: true
+  zip_handling: true
+  allow_zero_byte_files: false
+  header_special_chars_cleanup: true
+  read_options:
+    field_delimiter: "|"
+    skip_header: 1
+    null_if: ["", "NULL"]
+    trim_space: true
+    encoding: UTF8
 ```
 
-Creates the named file formats (`FMT_CSV`, `FMT_TXT`, `FMT_PARQUET`) used by COPY INTO during Stage 1.
+### Stage2 — Standardisation and Validation
+
+```yaml
+stage2:
+  load_type: delta
+  target_schema: STG
+  target_table: CLAIMS_TXT_STD
+  primary_keys: ["claim_id"]
+  merge_util: "yes"           # yes = MERGE upsert | no = APPEND or OVERWRITE
+  schema_changes: "no"        # yes = ADD COLUMN on drift | no = FAIL on drift
+  delete_column_name: delete_flag
+  delete_column_value: "D"
+  fields_long_conversion: ["claim_id", "member_id"]
+  fields_integer_conversion: ["line_number"]
+  fields_float_conversion: ["allowed_ratio"]
+  fields_decimal_conversion:
+    - column_name: billed_amount
+      precision: 18
+      scale: 2
+  fields_timestamp_conversion: ["ingestion_ts"]
+  fields_date_conversion: ["service_date#MM/dd/yyyy"]   # col#format syntax
+  fields_boolean_conversion: ["adjusted_flag"]
+  fields_null_check: ["claim_id", "member_id", "service_date"]
+  fields_composite_unique_check: [["claim_id", "line_number"]]
+```
+
+#### `merge_util` vs `schema_changes` — These Are Separate Controls
+
+| Control | Responsibility | Effect |
+|---|---|---|
+| `merge_util: yes` | Data loading strategy | Use MERGE with primary_keys for upsert |
+| `merge_util: no` | Data loading strategy | Use APPEND (delta/adhoc) or OVERWRITE (full) |
+| `schema_changes: yes` | Schema evolution | ADD COLUMN when source has new fields |
+| `schema_changes: no` | Schema evolution | FAIL when source schema differs from target |
+
+#### Date and Timestamp Format Syntax
+
+The `#` separator encodes the format mask inline with the column name:
+
+```yaml
+fields_date_conversion: ["order_date#MM/dd/yyyy", "service_date"]
+#                         ─────────┬──────────── ──────┬──────
+#                         col name─┘  format mask      └─ AUTO (no format = AUTO)
+```
+
+The framework parses this in `sql_generator.sql` using `SPLIT_PART(entry, '#', 1)` for the column name and `SPLIT_PART(entry, '#', 2)` for the format. If no `#` is present, `AUTO` is used.
+
+Generated SQL:
+```sql
+TRY_TO_DATE(order_date, 'MM/dd/yyyy')  AS order_date
+TRY_TO_DATE(service_date)              AS service_date   -- AUTO
+```
+
+### Stage3 — Curated Outputs
+
+```yaml
+stage3:
+  - name: "vw_claims_curated"
+    type: "sql_query"
+    value: >
+      CREATE OR REPLACE VIEW CURATED.VW_CLAIMS_CURATED AS
+      SELECT claim_id, member_id, billed_amount
+      FROM STG.CLAIMS_TXT_STD
+      WHERE COALESCE(delete_flag, 'N') <> 'D';
+```
+
+Each item must have `name`, `type`, and `value`. Items execute in list order. `type: sql_query` executes `value` as a SQL statement via `EXECUTE IMMEDIATE`.
 
 ---
 
-### Step 3 — Create External Stages (SQL)
+## Schema Validation
 
-```
-File: ddl/02_external_stages.sql
-```
+### `configs/schema.yaml` — What Is Validated Statically
 
-> **Before running:** Update the GCS bucket URLs and storage integration name to match your GCP environment.
+The schema contract validates YAML structure before Stage1 begins. It checks:
 
-Creates external stages pointing to your GCS buckets for raw file landing, framework configs, and archives.
+- Required sections (`stage1`, `stage2`, `stage3`)
+- Allowed keys (additional properties are forbidden)
+- Enum values (`load_type`, `file_type`, `merge_util`, `schema_changes`, `type`)
+- Data types (string, boolean, integer, array, object)
+- Array item formats (decimal conversion objects, composite unique groups)
+- Stage3 list structure with `name`, `type`, `value`
 
----
+**What is NOT validated statically:**
+- Source column existence (columns are unknown before file arrival)
+- Stage2 field references (validated at runtime after Stage1 schema discovery)
 
-### Step 4 — Create Control Tables (SQL)
+### Runtime Field-Reference Validation
 
-```
-File: ddl/03_control_tables.sql
-```
+After Stage1 discovers the file headers via `INFER_SCHEMA`, all Stage2 column references are validated against the discovered schema. This applies to:
 
-Creates the seven control tables in the `CONTROL` schema: `PIPELINE_RUN_LOG`, `BATCH_LOG`, `FILE_LOG`, `CHUNK_LOG`, `YAML_EXECUTION_LOG`, `SOURCE_SCHEMA_REGISTRY`, `FRAMEWORK_CONFIG`.
+- `primary_keys`
+- `delete_column_name`
+- `fields_long_conversion`, `fields_integer_conversion`, `fields_float_conversion`
+- `fields_decimal_conversion`
+- `fields_timestamp_conversion`, `fields_date_conversion`
+- `fields_boolean_conversion`
+- `fields_null_check`
+- `fields_composite_unique_check`
 
----
-
-### Step 5 — Create Audit Tables (SQL)
-
-```
-File: ddl/04_audit_tables.sql
-```
-
-Creates the four audit tables in the `AUDIT` schema: `MERGE_AUDIT_LOG`, `SCHEMA_DRIFT_LOG`, `STAGE3_ACTION_LOG`, `VALIDATION_LOG`.
-
----
-
-### Step 6 — Create Reject Tables (SQL)
-
-```
-File: ddl/05_reject_tables.sql
-```
-
-Creates the reject/quarantine tables in the `REJECTS` schema for rows that fail Stage 2 validation.
+If any referenced column does not exist in the discovered schema, the framework raises a `FIELD_REFERENCE_VALIDATION_FAILED` exception with a complete list of missing columns before Stage2 begins.
 
 ---
 
-### Step 7 — Set Up RBAC Roles and Grants (SQL)
-
-```
-File: ddl/06_rbac.sql
-```
-
-> **Before running:** Customise the role assignments and user grants for your team.
-
-Creates three roles: `INGESTION_ADMIN`, `INGESTION_OPERATOR`, `INGESTION_ANALYST`, and grants appropriate privileges.
-
----
-
-### Step 8 — (Optional) Set Up Snowpipe Auto-Ingestion (SQL)
-
-```
-File: ddl/07_snowpipe_gcs_pubsub.sql
-```
-
-> Only needed if you want automatic file ingestion via GCS Pub/Sub notifications.
-
-Sets up Snowpipe for auto-ingestion when files land in GCS.
-
----
-
-### Step 9 — Deploy Python UDFs (SQL)
-
-These SQL files contain embedded Python code that runs inside Snowflake. Run them in this order:
-
-```
-File 1: framework/python_udfs/yaml_parser.sql
-File 2: framework/python_udfs/schema_validator.sql
-```
-
-- **yaml_parser.sql** — Creates a Python UDF that converts YAML text to Snowflake `VARIANT`.
-- **schema_validator.sql** — Creates a Python UDF that validates YAML configs against `configs/schema.yaml` using `jsonschema`.
-
----
-
-### Step 10 — Deploy Utility Stored Procedures (SQL)
-
-Run all five utility files. Order matters — `log_writer` should be first since other utilities may reference logging:
-
-```
-File 1: framework/utils/log_writer.sql
-File 2: framework/utils/chunk_planner.sql
-File 3: framework/utils/field_validator.sql
-File 4: framework/utils/sql_generator.sql
-File 5: framework/utils/merge_generator.sql
-```
-
----
-
-### Step 11 — Deploy Config Loader and Stage Handlers (SQL)
-
-Run in this order — the config loader must exist before the stage handlers, and Stage 1 must exist before Stage 2:
-
-```
-File 1: framework/config_loader.sql
-File 2: framework/stage1_handler.sql
-File 3: framework/stage2_handler.sql
-File 4: framework/stage3_handler.sql
-```
-
----
-
-### Step 12 — Deploy the Master Runner (SQL)
-
-```
-File: framework/master_runner.sql
-```
-
-This is the main SQL stored procedure that orchestrates the full pipeline (Stage 1 → Stage 2 → Stage 3).
-
----
-
-### Step 13 — (Optional) Deploy Snowpark Python Stored Procedures
-
-If you prefer the Snowpark Python implementation over the SQL stored procedures:
-
-```
-File 1: framework/snowpark/yaml_loader_sp.py
-File 2: framework/snowpark/master_runner_sp.py
-```
-
-Deploy these via a Snowpark session (e.g., using SnowSQL, Snowflake VS Code extension, or a Snowpark Python client). `master_runner_sp.py` depends on `yaml_loader_sp.py`.
-
----
-
-### Step 14 — Upload YAML Configs to Snowflake Stage
-
-Upload the schema validation contract and dataset configs to the internal framework stage:
+## Deployment Order
 
 ```sql
-PUT file://configs/schema.yaml              @UTIL.STG_FW_CONFIGS/          AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT file://configs/datasets/claims_txt.yaml @UTIL.STG_FW_CONFIGS/datasets/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT file://configs/datasets/orders_csv.yaml @UTIL.STG_FW_CONFIGS/datasets/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT file://configs/datasets/customers_parquet.yaml @UTIL.STG_FW_CONFIGS/datasets/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+-- 1. Database and schemas (run as ACCOUNTADMIN or SYSADMIN)
+-- Execute: ddl/00_database_and_schemas.sql
+
+-- 2. File formats
+-- Execute: ddl/01_file_formats.sql
+
+-- 3. External stages (update storage integration and URLs first)
+-- Execute: ddl/02_external_stages.sql
+
+-- 4. Control tables
+-- Execute: ddl/03_control_tables.sql
+
+-- 5. Audit tables
+-- Execute: ddl/04_audit_tables.sql
+
+-- 6. Reject tables
+-- Execute: ddl/05_reject_tables.sql
+
+-- 7. RBAC (customize role assignments)
+-- Execute: ddl/06_rbac.sql
+
+-- 8. Python UDFs
+-- Execute: framework/python_udfs/yaml_parser.sql
+-- Execute: framework/python_udfs/schema_validator.sql
+
+-- 9. Framework utilities
+-- Execute: framework/utils/log_writer.sql
+-- Execute: framework/utils/chunk_planner.sql
+-- Execute: framework/utils/field_validator.sql
+-- Execute: framework/utils/sql_generator.sql
+-- Execute: framework/utils/merge_generator.sql
+
+-- 10. Config loader and stage handlers
+-- Execute: framework/config_loader.sql
+-- Execute: framework/stage1_handler.sql
+-- Execute: framework/stage2_handler.sql
+-- Execute: framework/stage3_handler.sql
+
+-- 11. Master runner
+-- Execute: framework/master_runner.sql
+
+-- 12. Upload YAML configs to internal stage
+-- PUT file://configs/schema.yaml              @UTIL.STG_FW_CONFIGS/          AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+-- PUT file://configs/datasets/claims_txt.yaml @UTIL.STG_FW_CONFIGS/datasets/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+
+-- 13. Tasks (optional)
+-- Execute: orchestration/tasks_setup.sql
 ```
 
 ---
 
-### Step 15 — Run the Pipeline
-
-With everything deployed, execute the pipeline for any dataset with a single call:
+## Execution Examples
 
 ```sql
--- Using the SQL stored procedure
-CALL UTIL.MASTER_RUNNER('claims_txt.yaml', 'datasets/claims_txt.yaml', 'file_ingestion');
-CALL UTIL.MASTER_RUNNER('orders_csv.yaml', 'datasets/orders_csv.yaml', 'file_ingestion');
+CALL UTIL.MASTER_RUNNER('claims_txt.yaml',        'datasets/claims_txt.yaml',        'file_ingestion');
+CALL UTIL.MASTER_RUNNER('orders_csv.yaml',        'datasets/orders_csv.yaml',        'file_ingestion');
 CALL UTIL.MASTER_RUNNER('customers_parquet.yaml', 'datasets/customers_parquet.yaml', 'file_ingestion');
 ```
 
-```sql
--- Using the Snowpark Python stored procedure (if deployed in Step 13)
-CALL UTIL.MASTER_RUNNER_SP('claims_txt.yaml', 'datasets/claims_txt.yaml', 'file_ingestion', FALSE);
--- Set the last parameter to TRUE for post-Snowpipe mode (skips Stage 1)
-CALL UTIL.MASTER_RUNNER_SP('claims_txt.yaml', 'datasets/claims_txt.yaml', 'file_ingestion', TRUE);
-```
-
 ---
 
-### Step 16 — (Optional) Set Up Orchestration
+## Orchestration Options
 
-Choose one of the two scheduling options:
+### Option 1: Snowflake Tasks (Recommended)
 
-**Option A — Snowflake Tasks (recommended)**
-
-```
-File: orchestration/tasks_setup.sql
-```
-
-Creates one Snowflake Task per dataset. Resume and run tasks:
+See `orchestration/tasks_setup.sql`. One Task per dataset calls a wrapper procedure that calls `MASTER_RUNNER`.
 
 ```sql
 ALTER TASK UTIL.TASK_CLAIMS_TXT_DELTA RESUME;
-EXECUTE TASK UTIL.TASK_CLAIMS_TXT_DELTA;
+EXECUTE TASK UTIL.TASK_CLAIMS_TXT_DELTA;   -- manual run / restart
 ```
 
-**Option B — Apache Airflow**
+### Option 2: Apache Airflow
 
-```
-File: orchestration/airflow/snowflake_ingestion_dag.py
-```
+See `orchestration/airflow/snowflake_ingestion_dag.py`. Thin DAGs that call `MASTER_RUNNER` via `SnowflakeOperator`. All business logic stays in Snowflake.
 
-A thin Airflow DAG that calls `MASTER_RUNNER` via `SnowflakeOperator`. All business logic remains in Snowflake.
+**Use Airflow when:** cross-system dependencies exist, centralised multi-platform monitoring is required, or dynamic DAG generation from a dataset registry is needed.
 
 ---
 
-## Running the YAML Validation Tests (Python)
+## Control and Audit Tables
 
-Before deploying to Snowflake, you can validate your YAML dataset configs locally:
+| Table | Purpose |
+|---|---|
+| `CONTROL.PIPELINE_RUN_LOG` | One row per master execution |
+| `CONTROL.BATCH_LOG` | One row per file batch |
+| `CONTROL.FILE_LOG` | One row per source file |
+| `CONTROL.CHUNK_LOG` | One row per chunk (delta restartability) |
+| `CONTROL.YAML_EXECUTION_LOG` | Every YAML load and validation event |
+| `CONTROL.SOURCE_SCHEMA_REGISTRY` | Discovered column headers from Stage1 |
+| `CONTROL.FRAMEWORK_CONFIG` | Chunk size, retry limits, etc. |
+| `AUDIT.MERGE_AUDIT_LOG` | MERGE row counts |
+| `AUDIT.SCHEMA_DRIFT_LOG` | Schema evolution events |
+| `AUDIT.STAGE3_ACTION_LOG` | Stage3 action execution records |
+| `AUDIT.VALIDATION_LOG` | Field-level validation results |
+| `REJECTS.REJECT_LOG` | Summary reject counts |
+| `REJECTS.<dataset>_REJECT` | Dataset quarantine tables |
+
+---
+
+## Testing
 
 ```bash
-# Install dependencies
 pip install pyyaml jsonschema pytest
-
-# Run all 48 tests
 pytest tests/validate_yaml.py -v
+# 48 tests — all passing
 ```
-
----
-
-## One-Shot Deployment
-
-For a single-file deployment experience, run **`one_shot_setup.sql`** in a Snowflake worksheet or via SnowSQL. This file consolidates Steps 1–12 and 16 into one script. Before running, search for `TODO` in the file and update all placeholder values (GCS bucket URLs, storage integration name, user grants).
-
-```sql
--- Run via SnowSQL
-snowsql -f one_shot_setup.sql
-```
-
-> **Note:** Steps 13 (Snowpark) and 14 (PUT file uploads) require a local client or Snowpark session and are documented as comments inside the script.
-
----
-
-## Quick Reference — Deployment Order Summary
-
-| Step | File(s) | Type | Purpose |
-|------|---------|------|---------|
-| 1 | `ddl/00_database_and_schemas.sql` | SQL | Database, warehouse, schemas |
-| 2 | `ddl/01_file_formats.sql` | SQL | Named file formats |
-| 3 | `ddl/02_external_stages.sql` | SQL | GCS external stages |
-| 4 | `ddl/03_control_tables.sql` | SQL | Control/metadata tables |
-| 5 | `ddl/04_audit_tables.sql` | SQL | Audit tables |
-| 6 | `ddl/05_reject_tables.sql` | SQL | Reject/quarantine tables |
-| 7 | `ddl/06_rbac.sql` | SQL | Roles and grants |
-| 8 | `ddl/07_snowpipe_gcs_pubsub.sql` | SQL | Snowpipe (optional) |
-| 9 | `framework/python_udfs/yaml_parser.sql` | SQL+Python | YAML → VARIANT UDF |
-| 9 | `framework/python_udfs/schema_validator.sql` | SQL+Python | Schema validation UDF |
-| 10 | `framework/utils/log_writer.sql` | SQL | Logging utilities |
-| 10 | `framework/utils/chunk_planner.sql` | SQL | Chunk planning |
-| 10 | `framework/utils/field_validator.sql` | SQL | Field validation |
-| 10 | `framework/utils/sql_generator.sql` | SQL | SQL generation |
-| 10 | `framework/utils/merge_generator.sql` | SQL | Merge execution |
-| 11 | `framework/config_loader.sql` | SQL | Config loading |
-| 11 | `framework/stage1_handler.sql` | SQL | Stage 1 handler |
-| 11 | `framework/stage2_handler.sql` | SQL | Stage 2 handler |
-| 11 | `framework/stage3_handler.sql` | SQL | Stage 3 handler |
-| 12 | `framework/master_runner.sql` | SQL | Master runner (SQL) |
-| 13 | `framework/snowpark/yaml_loader_sp.py` | Python | Snowpark YAML loader (optional) |
-| 13 | `framework/snowpark/master_runner_sp.py` | Python | Snowpark master runner (optional) |
-| 14 | `configs/schema.yaml` + `configs/datasets/*.yaml` | YAML | Upload configs to stage |
-| 15 | — | SQL | Run the pipeline |
-| 16 | `orchestration/tasks_setup.sql` or `orchestration/airflow/snowflake_ingestion_dag.py` | SQL / Python | Scheduling (optional) |
