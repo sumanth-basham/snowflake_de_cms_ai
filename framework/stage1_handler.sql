@@ -102,7 +102,7 @@ BEGIN
     -- 2. Generate batch_id
     -- -----------------------------------------------------------------------
     v_batch_id := UUID_STRING();
-    CALL UTIL.LOG_BATCH_START(:p_run_id, :p_run_id, :p_yaml_name, 1, 0);
+    CALL UTIL.LOG_BATCH_START(:v_batch_id, :p_run_id, :p_yaml_name, 1, 0);
 
     -- -----------------------------------------------------------------------
     -- 3. Resolve file format name
