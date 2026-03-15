@@ -19,6 +19,7 @@ A production-grade, metadata-driven file ingestion and transformation framework 
 
 ```
 snowflake_de_cms_ai/
+├── one_shot_setup.sql                 # Single-file deployment (all 16 steps)
 ├── configs/
 │   ├── schema.yaml                    # YAML structure validation contract
 │   └── datasets/
@@ -293,6 +294,19 @@ pip install pyyaml jsonschema pytest
 # Run all 48 tests
 pytest tests/validate_yaml.py -v
 ```
+
+---
+
+## One-Shot Deployment
+
+For a single-file deployment experience, run **`one_shot_setup.sql`** in a Snowflake worksheet or via SnowSQL. This file consolidates Steps 1–12 and 16 into one script. Before running, search for `TODO` in the file and update all placeholder values (GCS bucket URLs, storage integration name, user grants).
+
+```sql
+-- Run via SnowSQL
+snowsql -f one_shot_setup.sql
+```
+
+> **Note:** Steps 13 (Snowpark) and 14 (PUT file uploads) require a local client or Snowpark session and are documented as comments inside the script.
 
 ---
 
