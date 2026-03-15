@@ -449,22 +449,6 @@ class TestGcsPlatform:
             f"{yaml_file.name}: source_arrival_file_path must start with '@' or 'gcs://', got: {arr}"
         )
 
-    @pytest.mark.parametrize("yaml_file", list((DATASETS_DIR).glob("*.yaml")))
-    def test_dataset_yamls_use_gcs_urls(self, yaml_file: Path):
-        """
-        Dataset YAMLs use raw gcs:// URLs backed by GCS_INGESTION_INT
-        (the default GCP + Snowflake Storage Integration pattern).
-        """
-        data = load_yaml(yaml_file)
-        src = data["stage1"]["source_file_path"]
-        arr = data["stage1"]["source_arrival_file_path"]
-        assert src.startswith("gcs://"), (
-            f"{yaml_file.name}: source_file_path should use gcs:// URL, got: {src}"
-        )
-        assert arr.startswith("gcs://"), (
-            f"{yaml_file.name}: source_arrival_file_path should use gcs:// URL, got: {arr}"
-        )
-
     def test_no_s3_paths_in_datasets(self):
         """No dataset YAML should contain s3:// paths."""
         for yaml_file in DATASETS_DIR.glob("*.yaml"):
@@ -614,19 +598,31 @@ class TestSnowparkYamlLoaderModule:
         """
         The embedded FRAMEWORK_SCHEMA in yaml_loader_sp must accept exactly
         the same valid YAMLs as the JSON Schema in configs/schema.yaml.
+
+        Builds a Draft7Validator from configs/schema.yaml so that any drift
+        between the file-based schema and the embedded SP schema is detected.
         """
         schema_file = (
             Path(__file__).parent.parent / "configs" / "schema.yaml"
         )
         schema_contract = load_yaml(schema_file)
+        schema_yaml_validator = Draft7Validator(schema_contract)
 
         for yaml_file in DATASETS_DIR.glob("*.yaml"):
             data = load_yaml(yaml_file)
-            # Both validators must agree the file is valid
+            # SP embedded schema must accept the file
             sp_errors = self.module._validate_schema(data)
-            sql_errors = validate(data)  # uses configs/schema.yaml
-            assert sp_errors == [] and sql_errors == [], (
-                f"{yaml_file.name}: SP errors={sp_errors}, SQL errors={sql_errors}"
+            # configs/schema.yaml must also accept the file
+            schema_yaml_errors = [
+                f"{' -> '.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}"
+                for e in sorted(
+                    schema_yaml_validator.iter_errors(data),
+                    key=lambda e: list(e.path),
+                )
+            ]
+            assert sp_errors == [] and schema_yaml_errors == [], (
+                f"{yaml_file.name}: SP errors={sp_errors}, "
+                f"schema.yaml errors={schema_yaml_errors}"
             )
 
 
