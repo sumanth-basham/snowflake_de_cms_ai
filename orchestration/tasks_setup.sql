@@ -50,11 +50,15 @@ LANGUAGE SQL
 COMMENT = 'Task wrapper: runs claims_txt.yaml pipeline'
 AS
 $$
+DECLARE
+    v_task_exec_id STRING;
 BEGIN
+    v_task_exec_id := UUID_STRING();
+
     INSERT INTO CONTROL.TASK_EXECUTION_LOG (
         task_exec_id, task_name, yaml_name, trigger_type, status, start_ts
     )
-    VALUES (UUID_STRING(), 'TASK_CLAIMS_TXT_DELTA', 'claims_txt.yaml', 'SCHEDULED', 'RUNNING', CURRENT_TIMESTAMP());
+    VALUES (v_task_exec_id, 'TASK_CLAIMS_TXT_DELTA', 'claims_txt.yaml', 'SCHEDULED', 'RUNNING', CURRENT_TIMESTAMP());
 
     CALL UTIL.MASTER_RUNNER(
         'claims_txt.yaml',
@@ -64,14 +68,14 @@ BEGIN
 
     UPDATE CONTROL.TASK_EXECUTION_LOG
     SET status = 'SUCCESS', end_ts = CURRENT_TIMESTAMP()
-    WHERE task_name = 'TASK_CLAIMS_TXT_DELTA' AND status = 'RUNNING';
+    WHERE task_exec_id = v_task_exec_id;
 
     RETURN 'SUCCESS';
 EXCEPTION
     WHEN OTHER THEN
         UPDATE CONTROL.TASK_EXECUTION_LOG
         SET status = 'FAILED', end_ts = CURRENT_TIMESTAMP(), error_message = SQLERRM
-        WHERE task_name = 'TASK_CLAIMS_TXT_DELTA' AND status = 'RUNNING';
+        WHERE task_exec_id = v_task_exec_id;
         RAISE;
 END;
 $$;
