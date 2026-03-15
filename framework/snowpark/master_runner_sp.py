@@ -44,13 +44,16 @@ SQL / Snowflake Scripting SPs do:
 
 GCS-specific behaviour
 ───────────────────────
-• YAML source_file_path and source_arrival_file_path values are Snowflake
-  external stage paths (e.g. '@UTIL.STG_CLAIMS_TXT/arrival/'), backed by the
-  GCS_INGESTION_INT storage integration.  Raw gcs:// URLs are never used in
-  the YAML; the stage definition (ddl/02_external_stages.sql) encapsulates
-  the GCS bucket URL and storage integration binding.
-• The framework passes the stage path directly to COPY INTO and INFER_SCHEMA,
-  so no URL resolution is needed at runtime.
+• YAML source_file_path and source_arrival_file_path values can be either:
+  - Snowflake external stage paths (e.g. '@UTIL.STG_CLAIMS_TXT/arrival/'),
+    backed by the GCS_INGESTION_INT storage integration, or
+  - Raw GCS URIs (e.g. 'gcs://my-bucket/path/prefix/').
+• For external stage paths, the stage definition (ddl/02_external_stages.sql)
+  encapsulates the GCS bucket URL and storage integration binding, and the
+  framework passes the stage path directly to COPY INTO and INFER_SCHEMA.
+• For raw gcs:// URIs, Stage1/schema components resolve the URI at runtime by
+  creating and using external stages dynamically, so URL-to-stage resolution
+  now occurs as part of pipeline execution.
 • Snowpipe-ingested files arrive via @UTIL.STG_* stages. The p_snowpipe_mode
   flag skips Stage1 when set to True.
 
