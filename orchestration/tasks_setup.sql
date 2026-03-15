@@ -60,10 +60,11 @@ BEGIN
     )
     VALUES (v_task_exec_id, 'TASK_CLAIMS_TXT_DELTA', 'claims_txt.yaml', 'SCHEDULED', 'RUNNING', CURRENT_TIMESTAMP());
 
-    CALL UTIL.MASTER_RUNNER(
+    CALL UTIL.MASTER_RUNNER_SP(
         'claims_txt.yaml',
         'datasets/claims_txt.yaml',
-        'file_ingestion'
+        'file_ingestion',
+        TRUE   -- p_snowpipe_mode: Stage1 already landed by Snowpipe; run Stage2+Stage3 only
     );
 
     UPDATE CONTROL.TASK_EXECUTION_LOG
@@ -93,10 +94,11 @@ BEGIN
     )
     VALUES (UUID_STRING(), 'TASK_ORDERS_CSV_FULL', 'orders_csv.yaml', 'SCHEDULED', 'RUNNING', CURRENT_TIMESTAMP());
 
-    CALL UTIL.MASTER_RUNNER(
+    CALL UTIL.MASTER_RUNNER_SP(
         'orders_csv.yaml',
         'datasets/orders_csv.yaml',
-        'file_ingestion'
+        'file_ingestion',
+        FALSE  -- p_snowpipe_mode: scheduled full load; run all three stages via COPY INTO
     );
 
     UPDATE CONTROL.TASK_EXECUTION_LOG
@@ -126,10 +128,11 @@ BEGIN
     )
     VALUES (UUID_STRING(), 'TASK_CUSTOMERS_PARQUET_DELTA', 'customers_parquet.yaml', 'SCHEDULED', 'RUNNING', CURRENT_TIMESTAMP());
 
-    CALL UTIL.MASTER_RUNNER(
+    CALL UTIL.MASTER_RUNNER_SP(
         'customers_parquet.yaml',
         'datasets/customers_parquet.yaml',
-        'file_ingestion'
+        'file_ingestion',
+        TRUE   -- p_snowpipe_mode: Stage1 already landed by Snowpipe; run Stage2+Stage3 only
     );
 
     UPDATE CONTROL.TASK_EXECUTION_LOG

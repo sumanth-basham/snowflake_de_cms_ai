@@ -297,11 +297,12 @@ BEGIN
       );
 
     IF :v_pending_rows > 0 THEN
-        -- Trigger full pipeline (Stage1 already done by Snowpipe)
-        CALL UTIL.MASTER_RUNNER(
+        -- Trigger Stage2+Stage3 only (Stage1 already done by Snowpipe)
+        CALL UTIL.MASTER_RUNNER_SP(
             'claims_txt.yaml',
             'datasets/claims_txt.yaml',
-            'file_ingestion'
+            'file_ingestion',
+            TRUE   -- p_snowpipe_mode: skip Stage1
         );
     END IF;
 
