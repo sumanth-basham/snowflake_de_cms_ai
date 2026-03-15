@@ -193,7 +193,7 @@ BEGIN
     -- -----------------------------------------------------------------------
     CALL UTIL.GENERATE_CONVERSION_SELECT(
         :p_yaml_config, :v_discovered_cols,
-        :p_run_id, :v_batch_id, '', '', ''
+        :p_run_id, :v_batch_id, 'chunk_id', 'source_file_name', 'source_file_path'
     ) INTO v_conversion_select;
 
     -- -----------------------------------------------------------------------
