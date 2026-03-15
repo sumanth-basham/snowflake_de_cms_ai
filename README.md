@@ -142,8 +142,8 @@ Every dataset is configured through a single YAML file with three sections that 
 
 ```yaml
 stage1:
-  source_file_path: s3://my-bucket/raw/claims/
-  source_arrival_file_path: s3://my-bucket/raw/claims/arrival/
+  source_file_path: gcs://my-bucket/raw/claims/
+  source_arrival_file_path: gcs://my-bucket/raw/claims/arrival/
   file_pattern: ".*\\.txt"
   target_schema: RAW
   target_table: CLAIMS_TXT_RAW
