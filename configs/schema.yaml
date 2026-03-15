@@ -1,0 +1,262 @@
+# =============================================================================
+# schema.yaml  –  YAML Structure Validation Contract
+# =============================================================================
+# Purpose  : Defines what constitutes a valid dataset YAML for this framework.
+#            Validated STATICALLY before Stage1 starts (structure/types/enums).
+#            Source-column existence is validated at RUNTIME after Stage1
+#            discovers the actual file headers.
+#
+# Validator : framework/python_udfs/schema_validator.sql (jsonschema Python UDF)
+# =============================================================================
+
+$schema: "http://json-schema.org/draft-07/schema#"
+title: "Dataset YAML Validation Contract"
+description: >
+  Validates the structure of every dataset YAML used by the framework.
+  Does NOT validate source column names – those are checked at runtime.
+type: object
+
+required:
+  - stage1
+  - stage2
+  - stage3
+
+additionalProperties: false
+
+# ---------------------------------------------------------------------------
+# STAGE 1  –  Raw ingestion and source schema discovery
+# ---------------------------------------------------------------------------
+properties:
+  stage1:
+    type: object
+    description: "Raw landing configuration."
+    required:
+      - source_file_path
+      - source_arrival_file_path
+      - file_pattern
+      - target_schema
+      - target_table
+      - load_type
+      - file_type
+      - read_options
+    additionalProperties: false
+    properties:
+      source_file_path:
+        type: string
+        description: "Cloud storage path where source files reside (s3://, gcs://, azure://)."
+      source_arrival_file_path:
+        type: string
+        description: "Arrival/landing zone path. Files are moved here before processing."
+      file_pattern:
+        type: string
+        description: "Regex pattern to match target files (e.g. .*\\.csv)."
+      target_schema:
+        type: string
+        description: "Snowflake schema for raw table. Should be RAW."
+      target_table:
+        type: string
+        description: "Raw table name (e.g. ORDERS_CSV_RAW)."
+      load_type:
+        type: string
+        enum: [full, delta, adhoc]
+        description: "full = truncate-load; delta = incremental; adhoc = on-demand run."
+      file_type:
+        type: string
+        enum: [csv, txt, parquet]
+        description: "Source file format."
+      archive_files:
+        type: boolean
+        description: "Move processed files to archive path after successful load."
+        default: true
+      zip_handling:
+        type: boolean
+        description: "Unzip .zip / .gz files before loading."
+        default: false
+      allow_zero_byte_files:
+        type: boolean
+        description: "If false, zero-byte files cause the batch to fail."
+        default: false
+      header_special_chars_cleanup:
+        type: boolean
+        description: "Strip special chars (spaces, #, %) from column header names."
+        default: true
+      read_options:
+        type: object
+        description: "File-format read options passed to COPY INTO or file format definition."
+        additionalProperties: false
+        properties:
+          field_delimiter:
+            type: string
+            description: "Column delimiter for CSV/TXT. E.g. ',' or '|'."
+          record_delimiter:
+            type: string
+            description: "Row delimiter. Default is newline."
+          skip_header:
+            type: integer
+            minimum: 0
+            description: "Number of header rows to skip. 1 for single header row."
+          field_optionally_enclosed_by:
+            type: string
+            description: "Quote character for fields. E.g. '\"'."
+          escape_unenclosed_field:
+            type: string
+            description: "Escape character for unenclosed fields."
+          null_if:
+            type: array
+            items:
+              type: string
+            description: "List of string values to treat as NULL."
+          trim_space:
+            type: boolean
+            description: "Trim leading/trailing whitespace from string fields."
+          encoding:
+            type: string
+            description: "File encoding. E.g. UTF8, UTF16."
+          snappy_compression:
+            type: boolean
+            description: "Enable Snappy decompression for Parquet files."
+          binary_as_text:
+            type: boolean
+            description: "Treat Parquet BINARY columns as UTF-8 strings."
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2  –  Standardization, validation, and write behaviour
+  # ---------------------------------------------------------------------------
+  stage2:
+    type: object
+    description: "Standardization and validation configuration."
+    required:
+      - load_type
+      - target_schema
+      - target_table
+      - merge_util
+      - schema_changes
+    additionalProperties: false
+    properties:
+      load_type:
+        type: string
+        enum: [full, delta, adhoc]
+        description: "Must match stage1 load_type."
+      target_schema:
+        type: string
+        description: "Snowflake schema for standardized table. Should be STG."
+      target_table:
+        type: string
+        description: "Standardized table name (e.g. ORDERS_CSV_STD)."
+      primary_keys:
+        type: array
+        items:
+          type: string
+        description: >
+          Column(s) forming the natural key for MERGE operations.
+          Runtime-validated against discovered source columns.
+      merge_util:
+        type: string
+        enum: ["yes", "no"]
+        description: >
+          yes  = use MERGE-based upsert with primary_keys.
+          no   = use append or overwrite depending on load_type.
+      schema_changes:
+        type: string
+        enum: ["yes", "no"]
+        description: >
+          yes = allow controlled schema evolution (ADD COLUMN).
+          no  = fail if source schema differs from target schema.
+      delete_column_name:
+        type: string
+        description: >
+          Column whose value signals a soft-delete.
+          Runtime-validated against discovered source columns.
+      delete_column_value:
+        type: string
+        description: "Value in delete_column_name that marks a record for deletion (e.g. 'Y', 'D')."
+
+      # -- Type conversion arrays (runtime-validated column references) ------
+      fields_long_conversion:
+        type: array
+        items:
+          type: string
+        description: "Columns to cast to BIGINT / NUMBER(38,0)."
+      fields_integer_conversion:
+        type: array
+        items:
+          type: string
+        description: "Columns to cast to INTEGER / NUMBER(10,0)."
+      fields_float_conversion:
+        type: array
+        items:
+          type: string
+        description: "Columns to cast to FLOAT / DOUBLE."
+      fields_decimal_conversion:
+        type: array
+        description: "Columns to cast to NUMBER(precision, scale)."
+        items:
+          type: object
+          required: [column_name, precision, scale]
+          additionalProperties: false
+          properties:
+            column_name:
+              type: string
+            precision:
+              type: integer
+              minimum: 1
+              maximum: 38
+            scale:
+              type: integer
+              minimum: 0
+              maximum: 38
+      fields_timestamp_conversion:
+        type: array
+        items:
+          type: string
+        description: >
+          Columns to cast to TIMESTAMP_NTZ.
+          Optionally encode format: "col_name#YYYY-MM-DD HH24:MI:SS".
+      fields_date_conversion:
+        type: array
+        items:
+          type: string
+        description: >
+          Columns to cast to DATE.
+          Optionally encode format: "col_name#MM/dd/yyyy".
+      fields_boolean_conversion:
+        type: array
+        items:
+          type: string
+        description: "Columns to normalize to BOOLEAN (true/false/1/0/Y/N)."
+      fields_null_check:
+        type: array
+        items:
+          type: string
+        description: "Columns that must be non-null. Rows with nulls go to reject table."
+      fields_composite_unique_check:
+        type: array
+        description: "List of composite key groups for uniqueness validation."
+        items:
+          type: array
+          items:
+            type: string
+          minItems: 2
+
+  # ---------------------------------------------------------------------------
+  # STAGE 3  –  Curated output creation and post-processing actions
+  # ---------------------------------------------------------------------------
+  stage3:
+    type: array
+    description: "Ordered list of post-processing actions executed after Stage2."
+    minItems: 1
+    items:
+      type: object
+      required: [name, type, value]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: "Logical action name (used in logging and audit trail)."
+        type:
+          type: string
+          enum: [sql_query]
+          description: "Action type. Currently only sql_query is supported."
+        value:
+          type: string
+          description: "Executable SQL statement (CREATE VIEW, CREATE TABLE AS, etc.)."

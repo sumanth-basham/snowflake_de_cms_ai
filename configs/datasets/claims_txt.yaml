@@ -1,0 +1,99 @@
+# =============================================================================
+# claims_txt.yaml  –  Claims TXT (pipe-delimited) Dataset Configuration
+# =============================================================================
+# process_type : file_ingestion
+# yaml_name    : claims_txt.yaml
+# yaml_file_path: /configs/datasets/claims_txt.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# STAGE 1  –  Raw landing
+# ---------------------------------------------------------------------------
+stage1:
+  source_file_path: s3://my-bucket/raw/claims/
+  source_arrival_file_path: s3://my-bucket/raw/claims/arrival/
+  file_pattern: ".*\\.txt"
+  target_schema: RAW
+  target_table: CLAIMS_TXT_RAW
+  load_type: delta
+  file_type: txt
+  archive_files: true
+  zip_handling: true
+  allow_zero_byte_files: false
+  header_special_chars_cleanup: true
+  read_options:
+    field_delimiter: "|"
+    skip_header: 1
+    record_delimiter: "\n"
+    null_if: ["", "NULL", "null", "N/A"]
+    trim_space: true
+    encoding: UTF8
+
+# ---------------------------------------------------------------------------
+# STAGE 2  –  Standardization and validation
+# ---------------------------------------------------------------------------
+stage2:
+  load_type: delta
+  target_schema: STG
+  target_table: CLAIMS_TXT_STD
+  primary_keys: ["claim_id"]
+  merge_util: "yes"
+  schema_changes: "no"
+  delete_column_name: delete_flag
+  delete_column_value: "D"
+
+  # -- Type conversions (all columns runtime-validated against raw headers) --
+  fields_long_conversion: ["claim_id", "member_id", "provider_id"]
+  fields_integer_conversion: ["line_number"]
+  fields_float_conversion: ["allowed_ratio"]
+  fields_decimal_conversion:
+    - column_name: billed_amount
+      precision: 18
+      scale: 2
+    - column_name: paid_amount
+      precision: 18
+      scale: 2
+  fields_timestamp_conversion: ["ingestion_ts", "last_update_ts"]
+  # Date format encoded as column_name#format_mask
+  fields_date_conversion: ["service_date#MM/dd/yyyy", "paid_date#MM/dd/yyyy"]
+  fields_boolean_conversion: ["adjusted_flag"]
+
+  # -- Validation rules ------------------------------------------------------
+  fields_null_check: ["claim_id", "member_id", "service_date"]
+  fields_composite_unique_check: [["claim_id", "line_number"]]
+
+# ---------------------------------------------------------------------------
+# STAGE 3  –  Curated outputs (executed in order)
+# ---------------------------------------------------------------------------
+stage3:
+  - name: "vw_claims_curated"
+    type: "sql_query"
+    value: >
+      CREATE OR REPLACE VIEW CURATED.VW_CLAIMS_CURATED AS
+      SELECT
+        claim_id,
+        member_id,
+        provider_id,
+        service_date,
+        billed_amount,
+        paid_amount,
+        adjusted_flag,
+        last_update_ts,
+        run_id,
+        batch_id,
+        batch_load_date
+      FROM STG.CLAIMS_TXT_STD
+      WHERE COALESCE(delete_flag, 'N') <> 'D';
+
+  - name: "claims_summary_by_member"
+    type: "sql_query"
+    value: >
+      CREATE OR REPLACE TABLE CURATED.CLAIMS_SUMMARY_BY_MEMBER AS
+      SELECT
+        member_id,
+        COUNT(DISTINCT claim_id)       AS total_claims,
+        SUM(billed_amount)             AS total_billed,
+        SUM(paid_amount)               AS total_paid,
+        MAX(batch_load_date)           AS last_load_ts
+      FROM CURATED.VW_CLAIMS_CURATED
+      GROUP BY member_id;

@@ -1,0 +1,106 @@
+# =============================================================================
+# customers_parquet.yaml  –  Customers Parquet Dataset Configuration
+# =============================================================================
+# process_type : file_ingestion
+# yaml_name    : customers_parquet.yaml
+# yaml_file_path: /configs/datasets/customers_parquet.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# STAGE 1  –  Raw landing
+# ---------------------------------------------------------------------------
+stage1:
+  source_file_path: s3://my-bucket/raw/customers/
+  source_arrival_file_path: s3://my-bucket/raw/customers/arrival/
+  file_pattern: ".*\\.parquet"
+  target_schema: RAW
+  target_table: CUSTOMERS_PARQUET_RAW
+  load_type: delta
+  file_type: parquet
+  archive_files: true
+  zip_handling: false
+  allow_zero_byte_files: false
+  header_special_chars_cleanup: true
+  read_options:
+    null_if: ["", "NULL", "null"]
+    trim_space: true
+    snappy_compression: true
+    binary_as_text: true
+
+# ---------------------------------------------------------------------------
+# STAGE 2  –  Standardization and validation
+# ---------------------------------------------------------------------------
+stage2:
+  load_type: delta
+  target_schema: STG
+  target_table: CUSTOMERS_PARQUET_STD
+  primary_keys: ["customer_id"]
+  merge_util: "yes"
+  schema_changes: "yes"
+  delete_column_name: is_deleted
+  delete_column_value: "true"
+
+  # -- Type conversions (all columns runtime-validated against raw headers) --
+  fields_long_conversion: ["customer_id"]
+  fields_integer_conversion: ["age", "tenure_months"]
+  fields_float_conversion: ["credit_score_normalized"]
+  fields_decimal_conversion:
+    - column_name: annual_income
+      precision: 18
+      scale: 2
+    - column_name: credit_limit
+      precision: 18
+      scale: 2
+  fields_timestamp_conversion: ["created_at#yyyy-MM-dd'T'HH:mm:ss", "updated_at#yyyy-MM-dd'T'HH:mm:ss"]
+  fields_date_conversion: ["date_of_birth#yyyy-MM-dd", "enrollment_date#yyyy-MM-dd"]
+  fields_boolean_conversion: ["is_active", "is_deleted", "email_opt_in"]
+
+  # -- Validation rules ------------------------------------------------------
+  fields_null_check: ["customer_id", "email", "created_at"]
+  fields_composite_unique_check: [["customer_id", "enrollment_date"]]
+
+# ---------------------------------------------------------------------------
+# STAGE 3  –  Curated outputs (executed in order)
+# ---------------------------------------------------------------------------
+stage3:
+  - name: "vw_customers_active"
+    type: "sql_query"
+    value: >
+      CREATE OR REPLACE VIEW CURATED.VW_CUSTOMERS_ACTIVE AS
+      SELECT
+        customer_id,
+        email,
+        age,
+        tenure_months,
+        annual_income,
+        credit_limit,
+        credit_score_normalized,
+        date_of_birth,
+        enrollment_date,
+        is_active,
+        email_opt_in,
+        created_at,
+        updated_at,
+        run_id,
+        batch_id,
+        batch_load_date
+      FROM STG.CUSTOMERS_PARQUET_STD
+      WHERE COALESCE(is_deleted, FALSE) = FALSE
+        AND is_active = TRUE;
+
+  - name: "customers_credit_tier"
+    type: "sql_query"
+    value: >
+      CREATE OR REPLACE TABLE CURATED.CUSTOMERS_CREDIT_TIER AS
+      SELECT
+        customer_id,
+        credit_limit,
+        CASE
+          WHEN credit_limit >= 50000 THEN 'PLATINUM'
+          WHEN credit_limit >= 20000 THEN 'GOLD'
+          WHEN credit_limit >= 5000  THEN 'SILVER'
+          ELSE 'BRONZE'
+        END AS credit_tier,
+        MAX(batch_load_date) AS last_load_ts
+      FROM CURATED.VW_CUSTOMERS_ACTIVE
+      GROUP BY customer_id, credit_limit;

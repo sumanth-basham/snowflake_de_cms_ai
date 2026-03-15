@@ -1,0 +1,100 @@
+# =============================================================================
+# orders_csv.yaml  –  Orders CSV Dataset Configuration
+# =============================================================================
+# process_type : file_ingestion
+# yaml_name    : orders_csv.yaml
+# yaml_file_path: /configs/datasets/orders_csv.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# STAGE 1  –  Raw landing
+# ---------------------------------------------------------------------------
+stage1:
+  source_file_path: s3://my-bucket/raw/orders/
+  source_arrival_file_path: s3://my-bucket/raw/orders/arrival/
+  file_pattern: ".*\\.csv"
+  target_schema: RAW
+  target_table: ORDERS_CSV_RAW
+  load_type: full
+  file_type: csv
+  archive_files: true
+  zip_handling: false
+  allow_zero_byte_files: false
+  header_special_chars_cleanup: true
+  read_options:
+    field_delimiter: ","
+    skip_header: 1
+    field_optionally_enclosed_by: '"'
+    escape_unenclosed_field: "\\"
+    null_if: ["NULL", "null", ""]
+    trim_space: true
+    encoding: UTF8
+
+# ---------------------------------------------------------------------------
+# STAGE 2  –  Standardization and validation
+# ---------------------------------------------------------------------------
+stage2:
+  load_type: full
+  target_schema: STG
+  target_table: ORDERS_CSV_STD
+  primary_keys: ["order_id"]
+  merge_util: "yes"
+  schema_changes: "no"
+  delete_column_name: order_deleted_flag
+  delete_column_value: "Y"
+
+  # -- Type conversions (all columns runtime-validated against raw headers) --
+  fields_long_conversion: ["order_id", "customer_id"]
+  fields_integer_conversion: ["order_line_count"]
+  fields_float_conversion: ["discount_pct"]
+  fields_decimal_conversion:
+    - column_name: order_amount
+      precision: 18
+      scale: 2
+    - column_name: tax_amount
+      precision: 18
+      scale: 2
+  fields_timestamp_conversion: ["order_created_ts"]
+  # Date format encoded as column_name#format_mask
+  fields_date_conversion: ["order_date#MM/dd/yyyy"]
+  fields_boolean_conversion: ["priority_order_flag"]
+
+  # -- Validation rules ------------------------------------------------------
+  fields_null_check: ["order_id", "order_date", "order_created_ts"]
+  fields_composite_unique_check: [["order_id", "order_created_ts"]]
+
+# ---------------------------------------------------------------------------
+# STAGE 3  –  Curated outputs (executed in order)
+# ---------------------------------------------------------------------------
+stage3:
+  - name: "vw_orders_curated"
+    type: "sql_query"
+    value: >
+      CREATE OR REPLACE VIEW CURATED.VW_ORDERS_CURATED AS
+      SELECT
+        order_id,
+        customer_id,
+        order_date,
+        order_amount,
+        tax_amount,
+        discount_pct,
+        order_created_ts,
+        priority_order_flag,
+        run_id,
+        batch_id,
+        batch_load_date
+      FROM STG.ORDERS_CSV_STD
+      WHERE COALESCE(order_deleted_flag, 'N') <> 'Y';
+
+  - name: "orders_daily_summary"
+    type: "sql_query"
+    value: >
+      CREATE OR REPLACE TABLE CURATED.ORDERS_DAILY_SUMMARY AS
+      SELECT
+        order_date,
+        COUNT(DISTINCT order_id)   AS total_orders,
+        SUM(order_amount)          AS gross_revenue,
+        SUM(tax_amount)            AS total_tax,
+        MAX(batch_load_date)       AS last_load_ts
+      FROM CURATED.VW_ORDERS_CURATED
+      GROUP BY order_date;

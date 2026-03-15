@@ -1,0 +1,151 @@
+-- =============================================================================
+-- 06_rbac.sql
+-- Purpose : Role-based access control for the ingestion framework.
+--
+-- Roles
+--   FW_ADMIN    – Full framework administration (deploy, configure, monitor)
+--   FW_EXECUTOR – Runtime execution only (no DDL, no config writes)
+--   FW_READER   – Read-only access to curated and audit data
+--   FW_AUDITOR  – Read-only access to all audit, reject, and control tables
+--
+-- Principle of least privilege is applied.
+-- Service accounts used by Tasks and orchestration tools should be granted
+-- FW_EXECUTOR only.
+-- =============================================================================
+
+USE DATABASE INGESTION_FW;
+
+-- -----------------------------------------------------------------------
+-- Create roles
+-- -----------------------------------------------------------------------
+CREATE ROLE IF NOT EXISTS FW_ADMIN
+  COMMENT = 'Full framework administration – DDL, configuration, monitoring';
+
+CREATE ROLE IF NOT EXISTS FW_EXECUTOR
+  COMMENT = 'Framework runtime execution – call stored procedures, read/write data';
+
+CREATE ROLE IF NOT EXISTS FW_READER
+  COMMENT = 'Read-only access to curated (CURATED schema) and STG outputs';
+
+CREATE ROLE IF NOT EXISTS FW_AUDITOR
+  COMMENT = 'Read-only access to CONTROL, AUDIT, and REJECTS schemas';
+
+-- -----------------------------------------------------------------------
+-- Role hierarchy
+-- -----------------------------------------------------------------------
+GRANT ROLE FW_EXECUTOR TO ROLE FW_ADMIN;
+GRANT ROLE FW_READER   TO ROLE FW_ADMIN;
+GRANT ROLE FW_AUDITOR  TO ROLE FW_ADMIN;
+
+-- -----------------------------------------------------------------------
+-- Warehouse usage
+-- -----------------------------------------------------------------------
+GRANT USAGE ON WAREHOUSE FW_WH TO ROLE FW_ADMIN;
+GRANT USAGE ON WAREHOUSE FW_WH TO ROLE FW_EXECUTOR;
+GRANT USAGE ON WAREHOUSE FW_WH TO ROLE FW_READER;
+GRANT USAGE ON WAREHOUSE FW_WH TO ROLE FW_AUDITOR;
+
+-- -----------------------------------------------------------------------
+-- Database usage
+-- -----------------------------------------------------------------------
+GRANT USAGE ON DATABASE INGESTION_FW TO ROLE FW_ADMIN;
+GRANT USAGE ON DATABASE INGESTION_FW TO ROLE FW_EXECUTOR;
+GRANT USAGE ON DATABASE INGESTION_FW TO ROLE FW_READER;
+GRANT USAGE ON DATABASE INGESTION_FW TO ROLE FW_AUDITOR;
+
+-- -----------------------------------------------------------------------
+-- Schema grants – FW_ADMIN
+-- -----------------------------------------------------------------------
+GRANT ALL PRIVILEGES ON SCHEMA INGESTION_FW.RAW      TO ROLE FW_ADMIN;
+GRANT ALL PRIVILEGES ON SCHEMA INGESTION_FW.STG      TO ROLE FW_ADMIN;
+GRANT ALL PRIVILEGES ON SCHEMA INGESTION_FW.CURATED  TO ROLE FW_ADMIN;
+GRANT ALL PRIVILEGES ON SCHEMA INGESTION_FW.CONTROL  TO ROLE FW_ADMIN;
+GRANT ALL PRIVILEGES ON SCHEMA INGESTION_FW.AUDIT    TO ROLE FW_ADMIN;
+GRANT ALL PRIVILEGES ON SCHEMA INGESTION_FW.REJECTS  TO ROLE FW_ADMIN;
+GRANT ALL PRIVILEGES ON SCHEMA INGESTION_FW.UTIL     TO ROLE FW_ADMIN;
+
+-- -----------------------------------------------------------------------
+-- Schema grants – FW_EXECUTOR
+-- -----------------------------------------------------------------------
+GRANT USAGE ON SCHEMA INGESTION_FW.RAW      TO ROLE FW_EXECUTOR;
+GRANT USAGE ON SCHEMA INGESTION_FW.STG      TO ROLE FW_EXECUTOR;
+GRANT USAGE ON SCHEMA INGESTION_FW.CURATED  TO ROLE FW_EXECUTOR;
+GRANT USAGE ON SCHEMA INGESTION_FW.CONTROL  TO ROLE FW_EXECUTOR;
+GRANT USAGE ON SCHEMA INGESTION_FW.AUDIT    TO ROLE FW_EXECUTOR;
+GRANT USAGE ON SCHEMA INGESTION_FW.REJECTS  TO ROLE FW_EXECUTOR;
+GRANT USAGE ON SCHEMA INGESTION_FW.UTIL     TO ROLE FW_EXECUTOR;
+
+-- FW_EXECUTOR can create and modify tables in RAW, STG, CURATED
+GRANT CREATE TABLE ON SCHEMA INGESTION_FW.RAW     TO ROLE FW_EXECUTOR;
+GRANT CREATE TABLE ON SCHEMA INGESTION_FW.STG     TO ROLE FW_EXECUTOR;
+GRANT CREATE TABLE ON SCHEMA INGESTION_FW.CURATED TO ROLE FW_EXECUTOR;
+GRANT CREATE VIEW  ON SCHEMA INGESTION_FW.CURATED TO ROLE FW_EXECUTOR;
+
+-- FW_EXECUTOR can read/write all schemas
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
+    ON ALL TABLES IN SCHEMA INGESTION_FW.RAW      TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
+    ON ALL TABLES IN SCHEMA INGESTION_FW.STG      TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON ALL TABLES IN SCHEMA INGESTION_FW.CURATED  TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT, UPDATE
+    ON ALL TABLES IN SCHEMA INGESTION_FW.CONTROL  TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT, UPDATE
+    ON ALL TABLES IN SCHEMA INGESTION_FW.AUDIT    TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT
+    ON ALL TABLES IN SCHEMA INGESTION_FW.REJECTS  TO ROLE FW_EXECUTOR;
+
+-- FW_EXECUTOR can call framework stored procedures
+GRANT USAGE ON ALL PROCEDURES IN SCHEMA INGESTION_FW.UTIL    TO ROLE FW_EXECUTOR;
+GRANT USAGE ON ALL FUNCTIONS  IN SCHEMA INGESTION_FW.UTIL    TO ROLE FW_EXECUTOR;
+
+-- FW_EXECUTOR can read stage configs
+GRANT READ ON STAGE INGESTION_FW.UTIL.STG_FW_CONFIGS TO ROLE FW_EXECUTOR;
+
+-- Future grants so new objects are automatically accessible
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
+    ON FUTURE TABLES IN SCHEMA INGESTION_FW.RAW      TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
+    ON FUTURE TABLES IN SCHEMA INGESTION_FW.STG      TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON FUTURE TABLES IN SCHEMA INGESTION_FW.CURATED  TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT, UPDATE
+    ON FUTURE TABLES IN SCHEMA INGESTION_FW.CONTROL  TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT, UPDATE
+    ON FUTURE TABLES IN SCHEMA INGESTION_FW.AUDIT    TO ROLE FW_EXECUTOR;
+GRANT SELECT, INSERT
+    ON FUTURE TABLES IN SCHEMA INGESTION_FW.REJECTS  TO ROLE FW_EXECUTOR;
+GRANT USAGE
+    ON FUTURE PROCEDURES IN SCHEMA INGESTION_FW.UTIL TO ROLE FW_EXECUTOR;
+
+-- -----------------------------------------------------------------------
+-- Schema grants – FW_READER (curated outputs only)
+-- -----------------------------------------------------------------------
+GRANT USAGE ON SCHEMA INGESTION_FW.CURATED TO ROLE FW_READER;
+GRANT USAGE ON SCHEMA INGESTION_FW.STG     TO ROLE FW_READER;
+GRANT SELECT ON ALL TABLES IN SCHEMA INGESTION_FW.CURATED TO ROLE FW_READER;
+GRANT SELECT ON ALL VIEWS  IN SCHEMA INGESTION_FW.CURATED TO ROLE FW_READER;
+GRANT SELECT ON ALL TABLES IN SCHEMA INGESTION_FW.STG     TO ROLE FW_READER;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA INGESTION_FW.CURATED TO ROLE FW_READER;
+GRANT SELECT ON FUTURE VIEWS  IN SCHEMA INGESTION_FW.CURATED TO ROLE FW_READER;
+
+-- -----------------------------------------------------------------------
+-- Schema grants – FW_AUDITOR (audit/control read-only)
+-- -----------------------------------------------------------------------
+GRANT USAGE ON SCHEMA INGESTION_FW.CONTROL TO ROLE FW_AUDITOR;
+GRANT USAGE ON SCHEMA INGESTION_FW.AUDIT   TO ROLE FW_AUDITOR;
+GRANT USAGE ON SCHEMA INGESTION_FW.REJECTS TO ROLE FW_AUDITOR;
+GRANT SELECT ON ALL TABLES IN SCHEMA INGESTION_FW.CONTROL TO ROLE FW_AUDITOR;
+GRANT SELECT ON ALL TABLES IN SCHEMA INGESTION_FW.AUDIT   TO ROLE FW_AUDITOR;
+GRANT SELECT ON ALL TABLES IN SCHEMA INGESTION_FW.REJECTS TO ROLE FW_AUDITOR;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA INGESTION_FW.CONTROL TO ROLE FW_AUDITOR;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA INGESTION_FW.AUDIT   TO ROLE FW_AUDITOR;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA INGESTION_FW.REJECTS TO ROLE FW_AUDITOR;
+
+-- -----------------------------------------------------------------------
+-- Assign roles to users / service accounts (template – customize per env)
+-- -----------------------------------------------------------------------
+-- GRANT ROLE FW_ADMIN    TO USER admin_user;
+-- GRANT ROLE FW_EXECUTOR TO USER svc_ingestion;
+-- GRANT ROLE FW_READER   TO USER analyst_user;
+-- GRANT ROLE FW_AUDITOR  TO USER compliance_user;
