@@ -118,7 +118,11 @@ BEGIN
     END WHILE;
 
     -- Include batch_load_date in UPDATE so we always track last-modified
-    v_update_clause := :v_update_clause || ',\n        tgt.batch_load_date = src.batch_load_date';
+    IF :v_update_clause IS NULL OR LENGTH(:v_update_clause) = 0 THEN
+        v_update_clause := 'tgt.batch_load_date = src.batch_load_date';
+    ELSE
+        v_update_clause := :v_update_clause || ',\n        tgt.batch_load_date = src.batch_load_date';
+    END IF;
 
     -- -----------------------------------------------------------------------
     -- Build the MERGE statement
