@@ -1,10 +1,24 @@
 -- =============================================================================
 -- tasks_setup.sql
--- Purpose : Snowflake Tasks-based orchestration for the ingestion framework.
+-- Purpose : Snowflake Tasks-based orchestration for the GCP + Snowflake
+--           ingestion framework.
+--
+-- GCP platform notes
+-- ──────────────────
+-- • Snowpipe auto-ingest handles Stage1 raw landing for event-driven datasets.
+--   The post-Snowpipe Tasks below invoke MASTER_RUNNER_SP with
+--   p_snowpipe_mode = TRUE to run Stage2 + Stage3 only.
+--
+-- • For scheduled full loads (orders), Tasks run MASTER_RUNNER_SP with
+--   p_snowpipe_mode = FALSE to execute all three stages via COPY INTO.
+--
+-- • All Tasks reference UTIL.MASTER_RUNNER_SP (Snowpark Python SP).
+--   The original UTIL.MASTER_RUNNER (SQL SP) is still available as a fallback.
 --
 -- Design
+-- ──────
 --   One TASK per dataset per schedule.
---   Each task calls UTIL.MASTER_RUNNER with hardcoded yaml_name / yaml_file_path.
+--   Each task calls UTIL.MASTER_RUNNER_SP with hardcoded yaml parameters.
 --   Tasks can be chained (predecessor → successor) for dependency ordering.
 --
 -- Task anatomy

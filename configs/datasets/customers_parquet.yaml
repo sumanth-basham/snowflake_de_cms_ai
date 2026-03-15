@@ -10,8 +10,8 @@
 # STAGE 1  –  Raw landing
 # ---------------------------------------------------------------------------
 stage1:
-  source_file_path: s3://my-bucket/raw/customers/
-  source_arrival_file_path: s3://my-bucket/raw/customers/arrival/
+  source_file_path: gcs://my-gcp-bucket/raw/customers/
+  source_arrival_file_path: gcs://my-gcp-bucket/raw/customers/arrival/
   file_pattern: ".*\\.parquet"
   target_schema: RAW
   target_table: CUSTOMERS_PARQUET_RAW

@@ -413,3 +413,225 @@ class TestBooleanNormalization:
         assert self.normalize("MAYBE") is None
         assert self.normalize("") is None
         assert self.normalize("2") is None
+
+
+# ===========================================================================
+# Tests: GCP / GCS platform – YAML path format and Snowpark SP structure
+# ===========================================================================
+class TestGcsPlatform:
+    """
+    Validate GCP-specific requirements:
+      - Dataset YAMLs use gcs:// paths (not s3:// or azure://)
+      - Snowpark SP modules export the correct handler function signatures
+      - yaml_loader_sp validates the schema contract identically to the
+        SQL UDF approach
+    """
+
+    # -----------------------------------------------------------------------
+    # GCS path format
+    # -----------------------------------------------------------------------
+    @pytest.mark.parametrize("yaml_file", list((DATASETS_DIR).glob("*.yaml")))
+    def test_source_paths_are_gcs(self, yaml_file: Path):
+        """All dataset YAMLs must reference gcs:// storage paths."""
+        data = load_yaml(yaml_file)
+        src = data["stage1"]["source_file_path"]
+        arr = data["stage1"]["source_arrival_file_path"]
+        assert src.startswith("gcs://"), (
+            f"{yaml_file.name}: source_file_path must start with 'gcs://', got: {src}"
+        )
+        assert arr.startswith("gcs://"), (
+            f"{yaml_file.name}: source_arrival_file_path must start with 'gcs://', got: {arr}"
+        )
+
+    def test_no_s3_paths_in_datasets(self):
+        """No dataset YAML should contain s3:// paths."""
+        for yaml_file in DATASETS_DIR.glob("*.yaml"):
+            data = load_yaml(yaml_file)
+            src = data["stage1"]["source_file_path"]
+            assert not src.startswith("s3://"), (
+                f"{yaml_file.name}: found legacy s3:// path: {src}"
+            )
+
+    def test_no_azure_paths_in_datasets(self):
+        """No dataset YAML should contain azure:// paths."""
+        for yaml_file in DATASETS_DIR.glob("*.yaml"):
+            data = load_yaml(yaml_file)
+            src = data["stage1"]["source_file_path"]
+            assert not src.startswith("azure://"), (
+                f"{yaml_file.name}: found azure:// path: {src}"
+            )
+
+    def test_gcs_path_contains_bucket_and_prefix(self):
+        """GCS paths must follow gcs://<bucket>/<prefix>/ format."""
+        for yaml_file in DATASETS_DIR.glob("*.yaml"):
+            data = load_yaml(yaml_file)
+            src = data["stage1"]["source_file_path"]
+            # Strip scheme and check there is at least one slash after the bucket
+            path_part = src[len("gcs://"):]
+            assert "/" in path_part, (
+                f"{yaml_file.name}: gcs:// path must include bucket and prefix, got: {src}"
+            )
+
+
+# ===========================================================================
+# Tests: Snowpark SP module structure (yaml_loader_sp.py)
+# ===========================================================================
+class TestSnowparkYamlLoaderModule:
+    """
+    Validate that the yaml_loader_sp Snowpark module:
+    - exports the expected handler function
+    - the embedded FRAMEWORK_SCHEMA is a valid JSON Schema Draft-07 object
+    - _validate_schema returns no errors for valid YAML
+    - _validate_schema returns errors for invalid YAML
+    """
+
+    @pytest.fixture(autouse=True)
+    def _import_module(self):
+        """Add the snowpark directory to sys.path and import the module."""
+        snowpark_dir = str(
+            Path(__file__).parent.parent / "framework" / "snowpark"
+        )
+        if snowpark_dir not in sys.path:
+            sys.path.insert(0, snowpark_dir)
+
+        # yaml_loader_sp imports snowflake.snowpark at module level for type hints only;
+        # mock it so the module can be imported in a local test environment.
+        import types, sys as _sys
+        if "snowflake" not in _sys.modules:
+            sf_mock = types.ModuleType("snowflake")
+            sp_mock = types.ModuleType("snowflake.snowpark")
+            session_mock = type("Session", (), {})()
+            sp_mock.Session = type("Session", (), {})
+            sf_mock.snowpark = sp_mock
+            _sys.modules["snowflake"] = sf_mock
+            _sys.modules["snowflake.snowpark"] = sp_mock
+
+        import importlib
+        self.module = importlib.import_module("yaml_loader_sp")
+
+    def test_handler_function_exists(self):
+        """Module must export load_and_validate_yaml as the SP handler."""
+        assert hasattr(self.module, "load_and_validate_yaml"), (
+            "yaml_loader_sp must define load_and_validate_yaml()"
+        )
+        assert callable(self.module.load_and_validate_yaml)
+
+    def test_framework_schema_is_dict(self):
+        """FRAMEWORK_SCHEMA constant must be a dict (JSON Schema object)."""
+        schema = self.module.FRAMEWORK_SCHEMA
+        assert isinstance(schema, dict)
+        assert schema.get("type") == "object"
+
+    def test_framework_schema_requires_three_stages(self):
+        """FRAMEWORK_SCHEMA must require stage1, stage2, stage3."""
+        required = self.module.FRAMEWORK_SCHEMA.get("required", [])
+        assert "stage1" in required
+        assert "stage2" in required
+        assert "stage3" in required
+
+    def test_validate_schema_passes_for_valid_yaml(self):
+        """_validate_schema must return empty list for valid dataset YAML."""
+        data = load_yaml(DATASETS_DIR / "claims_txt.yaml")
+        errors = self.module._validate_schema(data)
+        assert errors == [], f"Unexpected validation errors: {errors}"
+
+    def test_validate_schema_fails_for_missing_stage1(self):
+        """_validate_schema must return errors when stage1 is absent."""
+        data = load_yaml(DATASETS_DIR / "claims_txt.yaml")
+        del data["stage1"]
+        errors = self.module._validate_schema(data)
+        assert len(errors) > 0, "Expected validation error for missing stage1"
+
+    def test_validate_schema_fails_for_invalid_load_type(self):
+        """_validate_schema must reject unknown load_type values."""
+        data = load_yaml(DATASETS_DIR / "claims_txt.yaml")
+        data["stage1"]["load_type"] = "streaming"
+        errors = self.module._validate_schema(data)
+        assert len(errors) > 0, "Expected error for load_type='streaming'"
+
+    def test_validate_schema_consistent_with_sql_validator(self):
+        """
+        The embedded FRAMEWORK_SCHEMA in yaml_loader_sp must accept exactly
+        the same valid YAMLs as the JSON Schema in configs/schema.yaml.
+        """
+        schema_file = (
+            Path(__file__).parent.parent / "configs" / "schema.yaml"
+        )
+        schema_contract = load_yaml(schema_file)
+
+        for yaml_file in DATASETS_DIR.glob("*.yaml"):
+            data = load_yaml(yaml_file)
+            # Both validators must agree the file is valid
+            sp_errors = self.module._validate_schema(data)
+            sql_errors = validate(data)  # uses configs/schema.yaml
+            assert sp_errors == [] and sql_errors == [], (
+                f"{yaml_file.name}: SP errors={sp_errors}, SQL errors={sql_errors}"
+            )
+
+
+# ===========================================================================
+# Tests: Snowpark master_runner_sp.py module structure
+# ===========================================================================
+class TestSnowparkMasterRunnerModule:
+    """
+    Validate that the master_runner_sp Snowpark module:
+    - exports the expected handler function
+    - defines SUPPORTED_PROCESS_TYPES including FILE_INGESTION
+    - helper SQL-builder functions produce correctly formatted CALL strings
+    """
+
+    @pytest.fixture(autouse=True)
+    def _import_module(self):
+        """Import master_runner_sp with mocked Snowflake/Snowpark dependencies."""
+        snowpark_dir = str(
+            Path(__file__).parent.parent / "framework" / "snowpark"
+        )
+        if snowpark_dir not in sys.path:
+            sys.path.insert(0, snowpark_dir)
+
+        import types, sys as _sys
+        # Ensure snowflake mocks are present
+        for mod_name in ["snowflake", "snowflake.snowpark"]:
+            if mod_name not in _sys.modules:
+                mock = types.ModuleType(mod_name)
+                mock.Session = type("Session", (), {})
+                _sys.modules[mod_name] = mock
+
+        # yaml_loader_sp must already be importable (set up by previous fixture class)
+        import importlib
+        self.module = importlib.import_module("master_runner_sp")
+
+    def test_handler_function_exists(self):
+        assert hasattr(self.module, "master_runner")
+        assert callable(self.module.master_runner)
+
+    def test_supported_process_types_includes_file_ingestion(self):
+        assert "FILE_INGESTION" in self.module.SUPPORTED_PROCESS_TYPES
+
+    def test_build_stage1_call_contains_run_id(self):
+        call_sql = self.module._build_stage1_call(
+            "run-001", "claims_txt.yaml", '{"stage1": {}}'
+        )
+        assert "run-001" in call_sql
+        assert "STAGE1_HANDLER" in call_sql
+
+    def test_build_stage2_call_contains_run_id(self):
+        call_sql = self.module._build_stage2_call(
+            "run-002", "claims_txt.yaml", '{"stage2": {}}', '{"batch_id": "b1"}'
+        )
+        assert "run-002" in call_sql
+        assert "STAGE2_HANDLER" in call_sql
+
+    def test_build_stage3_call_contains_run_id(self):
+        call_sql = self.module._build_stage3_call(
+            "run-003", "claims_txt.yaml", '{"stage3": []}', '{"valid_rows": 100}'
+        )
+        assert "run-003" in call_sql
+        assert "STAGE3_HANDLER" in call_sql
+
+    def test_single_quotes_in_json_are_escaped(self):
+        """SQL injection guard: single quotes in JSON must be escaped."""
+        json_with_quote = '{"key": "it\'s a value"}'
+        call_sql = self.module._build_stage1_call("r1", "test.yaml", json_with_quote)
+        # After escaping, no unbalanced single quotes should break the SQL
+        assert "''" in call_sql, "Expected escaped single quotes in generated SQL"

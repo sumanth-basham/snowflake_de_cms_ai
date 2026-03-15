@@ -1,6 +1,6 @@
-# Snowflake Metadata-Driven File Ingestion Framework
+# Snowflake Metadata-Driven File Ingestion Framework — GCP Platform
 
-A production-grade, metadata-driven file ingestion and transformation framework built natively for Snowflake.
+A production-grade, metadata-driven file ingestion and transformation framework built natively for **GCP + Snowflake**.
 
 ## Overview
 
@@ -15,7 +15,15 @@ A single master entry point handles any dataset by accepting three runtime param
 | `process_type` | Process type — currently `file_ingestion` |
 
 ```sql
--- Run any dataset with one call
+-- Run any dataset with one call (Snowpark Python SP — GCP platform)
+CALL UTIL.MASTER_RUNNER_SP(
+    'claims_txt.yaml',
+    'datasets/claims_txt.yaml',
+    'file_ingestion',
+    FALSE   -- FALSE = full pipeline; TRUE = post-Snowpipe (Stage2+Stage3 only)
+);
+
+-- Original SQL SP (still available as fallback)
 CALL UTIL.MASTER_RUNNER(
     'claims_txt.yaml',
     'datasets/claims_txt.yaml',

@@ -43,7 +43,7 @@ properties:
     properties:
       source_file_path:
         type: string
-        description: "Cloud storage path where source files reside (s3://, gcs://, azure://)."
+        description: "GCS path where source files reside (gcs://bucket/path/). Also supports s3:// and azure:// for non-GCP deployments."
       source_arrival_file_path:
         type: string
         description: "Arrival/landing zone path. Files are moved here before processing."
