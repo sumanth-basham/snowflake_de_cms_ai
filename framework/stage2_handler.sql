@@ -276,7 +276,7 @@ BEGIN
         '        NULL::NUMBER(18,0)             AS source_row_number,\n' ||
         '        ''NULL_CHECK violation: one or more required fields are null''  AS reject_reason,\n' ||
         '        PARSE_JSON(''["NULL_CHECK"]'')  AS reject_reason_codes,\n' ||
-        '        *\n' ||
+        '        * EXCLUDE (run_id, batch_id, chunk_id, source_file_name, source_file_path, batch_load_date)\n' ||
         '    FROM converted\n' ||
         '    WHERE ' || :v_null_check_pred || '\n' ||
         ')\n' ||
