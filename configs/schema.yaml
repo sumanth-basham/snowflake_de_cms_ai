@@ -43,10 +43,12 @@ properties:
     properties:
       source_file_path:
         type: string
-        description: "GCS path where source files reside (gcs://bucket/path/). Also supports s3:// and azure:// for non-GCP deployments."
+        pattern: "^@"
+        description: "Snowflake external stage path backed by GCS_INGESTION_INT storage integration (e.g. '@UTIL.STG_CLAIMS_TXT'). Must start with '@'. Do not use raw gcs:// URLs here; the stage encapsulates the GCS URL and storage integration."
       source_arrival_file_path:
         type: string
-        description: "Arrival/landing zone path. Files are moved here before processing."
+        pattern: "^@"
+        description: "Arrival sub-path within the same Snowflake external stage where new files land (e.g. '@UTIL.STG_CLAIMS_TXT/arrival/'). Must start with '@'."
       file_pattern:
         type: string
         description: "Regex pattern to match target files (e.g. .*\\.csv)."

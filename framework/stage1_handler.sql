@@ -126,9 +126,10 @@ BEGIN
     -- The discovered column names are persisted to SOURCE_SCHEMA_REGISTRY.
     -- -----------------------------------------------------------------------
 
-    -- Stage path is resolved from the arrival path
-    -- For this framework, the stage URL is stored as the arrival path.
-    -- In production, maintain a mapping table: arrival_path -> stage_name.
+    -- Stage path is taken directly from the YAML source_arrival_file_path.
+    -- The YAML value IS the Snowflake external stage path (e.g. '@UTIL.STG_CLAIMS_TXT/arrival/'),
+    -- which is backed by the GCS storage integration (GCS_INGESTION_INT).
+    -- No URL-to-stage mapping is needed: the YAML author names the stage explicitly.
     v_stage_path := :v_arrival_path;
 
     -- INFER_SCHEMA query (executed dynamically for flexibility)

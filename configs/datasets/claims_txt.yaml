@@ -10,8 +10,8 @@
 # STAGE 1  –  Raw landing
 # ---------------------------------------------------------------------------
 stage1:
-  source_file_path: gcs://my-gcp-bucket/raw/claims/
-  source_arrival_file_path: gcs://my-gcp-bucket/raw/claims/arrival/
+  source_file_path: "@UTIL.STG_CLAIMS_TXT"
+  source_arrival_file_path: "@UTIL.STG_CLAIMS_TXT/arrival/"
   file_pattern: ".*\\.txt"
   target_schema: RAW
   target_table: CLAIMS_TXT_RAW

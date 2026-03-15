@@ -115,7 +115,7 @@ FROM (
         UUID_STRING()                      AS batch_id,
         NULL                               AS chunk_id,
         METADATA$FILENAME                  AS source_file_name,
-        'gcs://my-gcp-bucket/raw/claims/'  AS source_file_path,
+        '@UTIL.STG_CLAIMS_TXT'             AS source_file_path,
         'claims_txt.yaml'                  AS yaml_name,
         'file_ingestion'                   AS process_type,
         CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS batch_load_date
@@ -151,7 +151,7 @@ FROM (
         UUID_STRING()                      AS batch_id,
         NULL                               AS chunk_id,
         METADATA$FILENAME                  AS source_file_name,
-        'gcs://my-gcp-bucket/raw/orders/'  AS source_file_path,
+        '@UTIL.STG_ORDERS_CSV'             AS source_file_path,
         'orders_csv.yaml'                  AS yaml_name,
         'file_ingestion'                   AS process_type,
         CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS batch_load_date
@@ -192,7 +192,7 @@ FROM (
         UUID_STRING()                         AS batch_id,
         NULL                                  AS chunk_id,
         METADATA$FILENAME                     AS source_file_name,
-        'gcs://my-gcp-bucket/raw/customers/'  AS source_file_path,
+        '@UTIL.STG_CUSTOMERS_PARQUET'         AS source_file_path,
         'customers_parquet.yaml'              AS yaml_name,
         'file_ingestion'                      AS process_type,
         CURRENT_TIMESTAMP()::TIMESTAMP_NTZ    AS batch_load_date
