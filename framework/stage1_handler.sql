@@ -69,6 +69,13 @@ DECLARE
     v_i                 INTEGER;
     v_stage_path        VARCHAR;
 
+    -- GCS URL path resolution
+    -- When source_file_path is a raw gcs:// URL the framework creates a named
+    -- external stage backed by GCS_INGESTION_INT so that INFER_SCHEMA and
+    -- COPY INTO can operate on it transparently.
+    v_gcs_stage_name    VARCHAR;
+    v_use_gcs_url       BOOLEAN;
+
     -- Result
     v_result            VARIANT;
 BEGIN
@@ -126,11 +133,50 @@ BEGIN
     -- The discovered column names are persisted to SOURCE_SCHEMA_REGISTRY.
     -- -----------------------------------------------------------------------
 
-    -- Stage path is taken directly from the YAML source_arrival_file_path.
-    -- The YAML value IS the Snowflake external stage path (e.g. '@UTIL.STG_CLAIMS_TXT/arrival/'),
-    -- which is backed by the GCS storage integration (GCS_INGESTION_INT).
-    -- No URL-to-stage mapping is needed: the YAML author names the stage explicitly.
-    v_stage_path := :v_arrival_path;
+    -- -----------------------------------------------------------------------
+    -- 3.5. Resolve stage path from source_file_path / source_arrival_file_path
+    --
+    -- Two formats are supported:
+    --   (a) Named Snowflake external stage  – e.g. '@UTIL.STG_CLAIMS_TXT/arrival/'
+    --       → used directly; no extra setup required.
+    --   (b) Raw GCS URL via storage integration – e.g. 'gcs://my-bucket/raw/claims/'
+    --       → a named stage is created in UTIL using GCS_INGESTION_INT so that
+    --         INFER_SCHEMA and COPY INTO can reference it as a Snowflake stage.
+    --       The stage is named UTIL.GCS_<yaml_name_sanitised> and is replaced on
+    --       each run so stale definitions are never a problem.
+    -- -----------------------------------------------------------------------
+    v_use_gcs_url := LEFT(:v_source_path, 6) = 'gcs://';
+
+    IF :v_use_gcs_url THEN
+        -- Derive a deterministic, DDL-safe stage name from the YAML name.
+        v_gcs_stage_name :=
+            'INGESTION_FW.UTIL.GCS_' ||
+            UPPER(REGEXP_REPLACE(:p_yaml_name, '[^a-zA-Z0-9]', '_'));
+
+        EXECUTE IMMEDIATE
+            'CREATE OR REPLACE STAGE ' || :v_gcs_stage_name        || E'\n' ||
+            '  STORAGE_INTEGRATION = GCS_INGESTION_INT'             || E'\n' ||
+            '  URL = ''' || :v_source_path || ''''                  || E'\n' ||
+            '  FILE_FORMAT = ' || :v_file_format_name;
+
+        -- Map the arrival GCS sub-URL to the equivalent stage sub-path.
+        -- e.g. source  = 'gcs://bucket/raw/claims/'
+        --      arrival = 'gcs://bucket/raw/claims/arrival/'
+        --      prefix  = 'arrival/'
+        --      result  = '@INGESTION_FW.UTIL.GCS_CLAIMS_TXT_YAML/arrival/'
+        LET v_arrival_prefix VARCHAR :=
+            SUBSTR(:v_arrival_path, LENGTH(:v_source_path) + 1);
+
+        IF LENGTH(TRIM(:v_arrival_prefix)) > 0 THEN
+            v_stage_path := '@' || :v_gcs_stage_name || '/' || :v_arrival_prefix;
+        ELSE
+            v_stage_path := '@' || :v_gcs_stage_name;
+        END IF;
+    ELSE
+        -- Named external stage: use the YAML value directly.
+        v_stage_path     := :v_arrival_path;
+        v_gcs_stage_name := '';
+    END IF;
 
     -- INFER_SCHEMA query (executed dynamically for flexibility)
     LET infer_sql VARCHAR := 'SELECT COLUMN_NAME ' ||
@@ -314,7 +360,16 @@ BEGIN
     );
 
     -- -----------------------------------------------------------------------
-    -- 9. Return result context to master runner
+    -- 9. Drop the auto-created GCS stage now that the batch is complete.
+    --    This keeps the UTIL schema clean between runs; the stage is recreated
+    --    on the next execution so there is no residual state concern.
+    -- -----------------------------------------------------------------------
+    IF :v_use_gcs_url AND LENGTH(:v_gcs_stage_name) > 0 THEN
+        EXECUTE IMMEDIATE 'DROP STAGE IF EXISTS ' || :v_gcs_stage_name;
+    END IF;
+
+    -- -----------------------------------------------------------------------
+    -- 10. Return result context to master runner
     -- -----------------------------------------------------------------------
     v_result := OBJECT_CONSTRUCT(
         'status',            'SUCCESS',
@@ -332,6 +387,10 @@ EXCEPTION
         CALL UTIL.LOG_BATCH_END(
             :v_batch_id, 'FAILED', :v_files_processed, 1, 0, SQLERRM
         );
+        -- Best-effort cleanup of auto-created GCS stage on failure
+        IF :v_use_gcs_url AND LENGTH(:v_gcs_stage_name) > 0 THEN
+            EXECUTE IMMEDIATE 'DROP STAGE IF EXISTS ' || :v_gcs_stage_name;
+        END IF;
         RAISE;
 END;
 $$;

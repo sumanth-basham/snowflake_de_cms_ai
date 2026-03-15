@@ -43,12 +43,23 @@ properties:
     properties:
       source_file_path:
         type: string
-        pattern: "^@"
-        description: "Snowflake external stage path backed by GCS_INGESTION_INT storage integration (e.g. '@UTIL.STG_CLAIMS_TXT'). Must start with '@'. Do not use raw gcs:// URLs here; the stage encapsulates the GCS URL and storage integration."
+        pattern: "^(@|gcs://)"
+        description: >
+          GCS source root. Accepts two formats:
+          (1) Snowflake external stage reference – e.g. '@UTIL.STG_CLAIMS_TXT' –
+              where the stage is pre-created and backed by the GCS_INGESTION_INT
+              storage integration.
+          (2) Raw GCS URL – e.g. 'gcs://my-gcp-bucket/raw/claims/' – resolved at
+              runtime through the GCS_INGESTION_INT storage integration; the framework
+              auto-creates a named stage for INFER_SCHEMA and COPY INTO operations.
       source_arrival_file_path:
         type: string
-        pattern: "^@"
-        description: "Arrival sub-path within the same Snowflake external stage where new files land (e.g. '@UTIL.STG_CLAIMS_TXT/arrival/'). Must start with '@'."
+        pattern: "^(@|gcs://)"
+        description: >
+          Arrival sub-path where new files land. Must share the same root as
+          source_file_path. Accepts the same two formats:
+          (1) Stage sub-path – e.g. '@UTIL.STG_CLAIMS_TXT/arrival/'.
+          (2) GCS sub-URL  – e.g. 'gcs://my-gcp-bucket/raw/claims/arrival/'.
       file_pattern:
         type: string
         description: "Regex pattern to match target files (e.g. .*\\.csv)."

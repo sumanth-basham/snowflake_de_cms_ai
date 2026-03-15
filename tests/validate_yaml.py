@@ -53,8 +53,8 @@ FRAMEWORK_SCHEMA = {
             ],
             "additionalProperties": False,
             "properties": {
-                "source_file_path":             {"type": "string", "pattern": "^@"},
-                "source_arrival_file_path":     {"type": "string", "pattern": "^@"},
+                "source_file_path":             {"type": "string", "pattern": "^(@|gcs://)"},
+                "source_arrival_file_path":     {"type": "string", "pattern": "^(@|gcs://)"},
                 "file_pattern":                 {"type": "string"},
                 "target_schema":                {"type": "string"},
                 "target_table":                 {"type": "string"},
@@ -421,46 +421,49 @@ class TestBooleanNormalization:
 class TestGcsPlatform:
     """
     Validate GCP-specific requirements:
-      - Dataset YAMLs use gcs:// paths (not s3:// or azure://)
-      - Snowpark SP modules export the correct handler function signatures
+      - Dataset YAMLs use gcs:// paths (backed by Snowflake GCS Storage Integration)
+        or Snowflake external stage references – both formats are valid.
+      - No S3 / Azure paths are present.
       - yaml_loader_sp validates the schema contract identically to the
-        SQL UDF approach
+        SQL UDF approach.
     """
 
     # -----------------------------------------------------------------------
-    # Snowflake stage path format  (backed by GCS storage integration)
+    # Path format – both gcs:// and @stage references are valid
     # -----------------------------------------------------------------------
     @pytest.mark.parametrize("yaml_file", list((DATASETS_DIR).glob("*.yaml")))
-    def test_source_paths_are_snowflake_stages(self, yaml_file: Path):
+    def test_source_paths_use_valid_gcs_or_stage_format(self, yaml_file: Path):
         """
-        All dataset YAMLs must use Snowflake external stage paths
-        (starting with '@'), not raw gcs:// URLs.
-        The stage is backed by GCS_INGESTION_INT storage integration.
+        Dataset YAMLs must use either:
+          (a) a Snowflake external stage path starting with '@', or
+          (b) a raw GCS URL starting with 'gcs://' (resolved at runtime via
+              GCS_INGESTION_INT storage integration).
         """
         data = load_yaml(yaml_file)
         src = data["stage1"]["source_file_path"]
         arr = data["stage1"]["source_arrival_file_path"]
-        assert src.startswith("@"), (
-            f"{yaml_file.name}: source_file_path must be a Snowflake stage path "
-            f"starting with '@', got: {src}"
+        assert src.startswith("@") or src.startswith("gcs://"), (
+            f"{yaml_file.name}: source_file_path must start with '@' or 'gcs://', got: {src}"
         )
-        assert arr.startswith("@"), (
-            f"{yaml_file.name}: source_arrival_file_path must be a Snowflake stage path "
-            f"starting with '@', got: {arr}"
+        assert arr.startswith("@") or arr.startswith("gcs://"), (
+            f"{yaml_file.name}: source_arrival_file_path must start with '@' or 'gcs://', got: {arr}"
         )
 
-    def test_no_raw_gcs_urls_in_datasets(self):
-        """No dataset YAML should contain raw gcs:// paths — stages must be used instead."""
-        for yaml_file in DATASETS_DIR.glob("*.yaml"):
-            data = load_yaml(yaml_file)
-            src = data["stage1"]["source_file_path"]
-            arr = data["stage1"]["source_arrival_file_path"]
-            assert not src.startswith("gcs://"), (
-                f"{yaml_file.name}: source_file_path must be a stage path, not a raw GCS URL: {src}"
-            )
-            assert not arr.startswith("gcs://"), (
-                f"{yaml_file.name}: source_arrival_file_path must be a stage path, not a raw GCS URL: {arr}"
-            )
+    @pytest.mark.parametrize("yaml_file", list((DATASETS_DIR).glob("*.yaml")))
+    def test_dataset_yamls_use_gcs_urls(self, yaml_file: Path):
+        """
+        Dataset YAMLs use raw gcs:// URLs backed by GCS_INGESTION_INT
+        (the default GCP + Snowflake Storage Integration pattern).
+        """
+        data = load_yaml(yaml_file)
+        src = data["stage1"]["source_file_path"]
+        arr = data["stage1"]["source_arrival_file_path"]
+        assert src.startswith("gcs://"), (
+            f"{yaml_file.name}: source_file_path should use gcs:// URL, got: {src}"
+        )
+        assert arr.startswith("gcs://"), (
+            f"{yaml_file.name}: source_arrival_file_path should use gcs:// URL, got: {arr}"
+        )
 
     def test_no_s3_paths_in_datasets(self):
         """No dataset YAML should contain s3:// paths."""
@@ -480,53 +483,55 @@ class TestGcsPlatform:
                 f"{yaml_file.name}: found azure:// path: {src}"
             )
 
-    def test_stage_path_references_util_schema(self):
+    def test_arrival_path_is_subfolder_of_source_path(self):
         """
-        Stage paths should reference the UTIL schema
-        (e.g. '@UTIL.STG_CLAIMS_TXT') to confirm they use the
-        GCS_INGESTION_INT-backed stages defined in ddl/02_external_stages.sql.
-        """
-        for yaml_file in DATASETS_DIR.glob("*.yaml"):
-            data = load_yaml(yaml_file)
-            src = data["stage1"]["source_file_path"]
-            assert "UTIL.STG_" in src or src.startswith("@UTIL.STG_"), (
-                f"{yaml_file.name}: stage path should reference UTIL.STG_*, got: {src}"
-            )
-
-    def test_arrival_path_is_subfolder_of_source_stage(self):
-        """
-        source_arrival_file_path must be a sub-path of source_file_path's stage,
-        e.g. '@UTIL.STG_CLAIMS_TXT/arrival/' is a sub-path of '@UTIL.STG_CLAIMS_TXT'.
+        source_arrival_file_path must be a sub-path of source_file_path.
+        Works for both stage references and gcs:// URLs:
+          '@UTIL.STG_CLAIMS_TXT/arrival/' ⊂ '@UTIL.STG_CLAIMS_TXT'
+          'gcs://bucket/raw/claims/arrival/' ⊂ 'gcs://bucket/raw/claims/'
         """
         for yaml_file in DATASETS_DIR.glob("*.yaml"):
             data = load_yaml(yaml_file)
             src = data["stage1"]["source_file_path"]
             arr = data["stage1"]["source_arrival_file_path"]
-            # Strip trailing slash from stage root for comparison
-            stage_root = src.rstrip("/")
-            assert arr.startswith(stage_root), (
+            source_root = src.rstrip("/")
+            assert arr.startswith(source_root), (
                 f"{yaml_file.name}: source_arrival_file_path '{arr}' must be a "
                 f"sub-path of source_file_path '{src}'"
             )
 
-    def test_schema_contract_rejects_raw_gcs_url(self):
+    def test_schema_contract_accepts_gcs_url(self):
         """
-        schema.yaml has pattern: '^@' on source_file_path.
-        A raw gcs:// URL must fail validation.
+        The schema pattern '^(@|gcs://)' must accept raw gcs:// paths.
+        Both source_file_path and source_arrival_file_path must pass validation.
         """
         data = load_yaml(DATASETS_DIR / "claims_txt.yaml")
-        data["stage1"]["source_file_path"] = "gcs://my-bucket/raw/claims/"
+        data["stage1"]["source_file_path"]         = "gcs://my-bucket/raw/claims/"
+        data["stage1"]["source_arrival_file_path"] = "gcs://my-bucket/raw/claims/arrival/"
         errors = validate(data)
-        assert len(errors) > 0, (
-            "Expected schema validation error when source_file_path uses a raw gcs:// URL"
+        assert errors == [], (
+            f"Expected no validation errors for gcs:// paths, got: {errors}"
         )
 
     def test_schema_contract_accepts_stage_path(self):
-        """A valid '@UTIL.STG_*' stage path must pass the schema contract."""
+        """A valid '@UTIL.STG_*' stage path must also pass the schema contract."""
         data = load_yaml(DATASETS_DIR / "claims_txt.yaml")
-        # Already uses @UTIL.STG_CLAIMS_TXT — should pass
+        data["stage1"]["source_file_path"]         = "@UTIL.STG_CLAIMS_TXT"
+        data["stage1"]["source_arrival_file_path"] = "@UTIL.STG_CLAIMS_TXT/arrival/"
         errors = validate(data)
         assert errors == [], f"Unexpected errors for valid stage path: {errors}"
+
+    def test_schema_contract_rejects_invalid_path(self):
+        """
+        Paths that are neither '@...' nor 'gcs://...' must fail validation.
+        e.g. a bare bucket name or an s3:// URL must be rejected.
+        """
+        data = load_yaml(DATASETS_DIR / "claims_txt.yaml")
+        data["stage1"]["source_file_path"] = "s3://some-bucket/raw/claims/"
+        errors = validate(data)
+        assert len(errors) > 0, (
+            "Expected schema validation error for an s3:// path"
+        )
 
 
 # ===========================================================================

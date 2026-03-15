@@ -90,8 +90,8 @@ FRAMEWORK_SCHEMA = {
             ],
             "additionalProperties": False,
             "properties": {
-                "source_file_path":             {"type": "string", "pattern": "^@"},
-                "source_arrival_file_path":     {"type": "string", "pattern": "^@"},
+                "source_file_path":             {"type": "string", "pattern": "^(@|gcs://)"},
+                "source_arrival_file_path":     {"type": "string", "pattern": "^(@|gcs://)"},
                 "file_pattern":                 {"type": "string"},
                 "target_schema":                {"type": "string"},
                 "target_table":                 {"type": "string"},
