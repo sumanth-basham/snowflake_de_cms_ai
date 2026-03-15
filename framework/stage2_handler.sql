@@ -258,7 +258,10 @@ BEGIN
     --   )
     --   INSERT INTO REJECTS.<dataset>_REJECT SELECT ... FROM null_rejects
     -- -----------------------------------------------------------------------
+    -- First, ensure the reject table exists with the expected schema by
+    -- creating it (empty) from the null_rejects CTE if it is missing.
     v_reject_sql :=
+        'CREATE TABLE IF NOT EXISTS ' || :v_reject_full || ' AS\n' ||
         'WITH converted AS (\n' ||
         '    SELECT\n        ' || :v_conversion_select || '\n' ||
         '    FROM ' || :v_raw_table || '\n' ||
@@ -280,10 +283,38 @@ BEGIN
         '    FROM converted\n' ||
         '    WHERE ' || :v_null_check_pred || '\n' ||
         ')\n' ||
-        'INSERT INTO ' || :v_reject_full || '\n' ||
-        'SELECT * FROM null_rejects';
+        'SELECT * FROM null_rejects WHERE 1 = 0';
 
     IF :v_null_check_pred <> 'FALSE' THEN
+        -- Create the reject table if it does not already exist.
+        EXECUTE IMMEDIATE :v_reject_sql;
+
+        -- Now perform the original INSERT of null rejects into the table.
+        v_reject_sql :=
+            'WITH converted AS (\n' ||
+            '    SELECT\n        ' || :v_conversion_select || '\n' ||
+            '    FROM ' || :v_raw_table || '\n' ||
+            '    WHERE run_id = ''' || :p_run_id || '''\n' ||
+            '),\n' ||
+            'null_rejects AS (\n' ||
+            '    SELECT\n' ||
+            '        UUID_STRING()                  AS reject_id,\n' ||
+            '        ''' || :p_run_id  || '''        AS run_id,\n' ||
+            '        ''' || :v_batch_id || '''        AS batch_id,\n' ||
+            '        NULL                           AS chunk_id,\n' ||
+            '        ''' || :p_yaml_name || '''       AS yaml_name,\n' ||
+            '        source_file_name,\n' ||
+            '        source_file_path,\n' ||
+            '        NULL::NUMBER(18,0)             AS source_row_number,\n' ||
+            '        ''NULL_CHECK violation: one or more required fields are null''  AS reject_reason,\n' ||
+            '        PARSE_JSON(''["NULL_CHECK"]'')  AS reject_reason_codes,\n' ||
+            '        *\n' ||
+            '    FROM converted\n' ||
+            '    WHERE ' || :v_null_check_pred || '\n' ||
+            ')\n' ||
+            'INSERT INTO ' || :v_reject_full || '\n' ||
+            'SELECT * FROM null_rejects';
+
         EXECUTE IMMEDIATE :v_reject_sql;
 
         SELECT COUNT(*) INTO v_rejected_rows
